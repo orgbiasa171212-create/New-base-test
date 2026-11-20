@@ -1,0 +1,3029 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>New Base Test — Sistem Ujian & Pengawasan Tingkat Tinggi</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #f1f5f9;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        input, textarea, select {
+            user-select: text;
+            -webkit-user-select: text;
+        }
+
+        .mirror-video {
+            transform: scaleX(-1);
+        }
+
+        .pulse-rec {
+            animation: pulseRec 1.4s infinite;
+        }
+
+        @keyframes pulseRec {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.25; }
+        }
+
+        .anti-photo-watermark {
+            pointer-events: none;
+            user-select: none;
+            background-image: repeating-linear-gradient(
+                -24deg,
+                transparent,
+                transparent 120px,
+                rgba(15, 23, 42, 0.025) 120px,
+                rgba(15, 23, 42, 0.025) 240px
+            );
+        }
+    </style>
+</head>
+<body class="text-slate-800 antialiased">
+    <!-- Kontainer Utama Aplikasi -->
+    <div id="app"></div>
+
+    <!-- Modal Pesan Global -->
+    <div id="globalModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/65 backdrop-blur-xs p-4">
+        <div id="globalModalBox" class="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 p-6"></div>
+    </div>
+
+    <!-- Modal Formulir / Detail Dinamis -->
+    <div id="dynamicModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/65 backdrop-blur-xs p-4">
+        <div id="dynamicModalBody" class="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-200 p-6"></div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import {
+            getFirestore,
+            doc,
+            getDoc,
+            setDoc,
+            deleteDoc,
+            collection,
+            onSnapshot
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ==================== 1. KONFIGURASI & DEFAULT STATE ====================
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'new-base-test-prod';
+        const SESSION_KEY = 'nbt_active_session_v3';
+        const DEVICE_TOKEN_KEY = 'nbt_device_lock_token_v2';
+        const LOCAL_MIRROR_KEY = 'nbt_sharded_mirror_' + appId;
+        const CUSTOM_FIREBASE_CONFIG_KEY = 'nbt_custom_firebase_config_v1';
+        const PENDING_QUEUE_KEY = 'nbt_pending_sync_queue_v1';
+
+        let db = null;
+        let auth = null;
+        let cloudSyncStatus = 'Menghubungkan ke Cloud...';
+        let cloudConnectedLive = false;
+        let activeFirebaseProjectId = '-';
+        let unsubscribeMeta = null;
+        let unsubscribeResults = null;
+        let unsubscribeLive = null;
+
+        const DEFAULT_STATE = {
+            folders: [
+                {
+                    id: 'folder-default-1',
+                    title: 'Evaluasi Utama — Paket A',
+                    subject: 'Pengetahuan Umum & Penalaran',
+                    description: 'Folder ujian utama dengan pengawasan kamera, pengacakan soal & opsi, serta sinkronisasi cloud terpecah.',
+                    scheduleStart: '',
+                    scheduleEnd: '',
+                    durationMinutes: 45,
+                    tokenEnabled: false,
+                    tokenCode: 'CBT2026',
+                    security: {
+                        cameraPolicy: 'optional', // 'required' | 'optional' | 'off'
+                        randomizeQuestions: true,
+                        randomizeOptions: true,
+                        watermarkEnabled: true,
+                        periodicSnapshots: true,
+                        snapshotIntervalSec: 45,
+                        blockShortcuts: true,
+                        detectSplitScreen: true,
+                        singleSessionLock: true
+                    },
+                    questions: [
+                        {
+                            id: 'q-101',
+                            type: 'pg',
+                            text: 'Manakah pernyataan yang paling tepat mengenai penyimpanan dokumen terpecah pada sistem ujian daring?',
+                            options: [
+                                'Mencegah data antar-peserta saling menimpa saat mengumpulkan ujian bersamaan',
+                                'Menghapus seluruh jawaban peserta setiap kali halaman dimuat ulang',
+                                'Membuat durasi ujian bergantung pada jam manual di perangkat siswa',
+                                'Menonaktifkan fitur pengacakan pilihan jawaban'
+                            ],
+                            correctOption: 0,
+                            correctOptions: [0],
+                            points: 20
+                        },
+                        {
+                            id: 'q-102',
+                            type: 'pg_kompleks',
+                            text: 'Pilih seluruh mekanisme keamanan yang aktif pada sistem CBT ini:',
+                            options: [
+                                'Pengacakan urutan soal dan opsi jawaban A/B/C/D',
+                                'Penghitung waktu mundur monotonik anti-manipulasi jam perangkat',
+                                'Pemulihan sesi otomatis saat peserta menutup/keluar halaman web',
+                                'Penyediaan akun admin demo bawaan di halaman login'
+                            ],
+                            correctOption: 0,
+                            correctOptions: [0, 1, 2],
+                            points: 20
+                        },
+                        {
+                            id: 'q-103',
+                            type: 'uraian',
+                            text: 'Jelaskan mengapa mode layar penuh (fullscreen) dan pencatatan pelanggaran penting dalam menjaga integritas ujian berbasis komputer.',
+                            options: [],
+                            correctOption: 0,
+                            correctOptions: [],
+                            points: 60
+                        }
+                    ]
+                }
+            ],
+            // Tidak ada akun admin bawaan/demo; admin pertama mendaftar mandiri sekali saat sistem kosong
+            users: [
+                {
+                    id: 'stu-1',
+                    role: 'student',
+                    fullName: 'Raka Pratama',
+                    username: 'siswa01',
+                    password: '123456',
+                    institution: 'SMA Negeri 1 Nusantara',
+                    classGroup: 'XII IPA 1',
+                    participantId: 'SIS-2026-001',
+                    category: 'instansi'
+                },
+                {
+                    id: 'stu-2',
+                    role: 'student',
+                    fullName: 'Nadia Kusuma',
+                    username: 'mandiri01',
+                    password: '123456',
+                    institution: 'Peserta Mandiri',
+                    classGroup: 'Umum',
+                    participantId: 'MND-2026-002',
+                    category: 'mandiri'
+                }
+            ],
+            activeDeviceLocks: {},
+            submissionsMap: {}, // key: `${folderId}_${studentId}`
+            liveSessionsMap: {} // key: `${folderId}_${studentId}`
+        };
+
+        let appState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+        let currentUser = null;
+        let loginRole = 'student';
+        let loginCategory = 'instansi';
+        let activeMenu = 'ujian';
+        let selectedAdminFolderId = 'folder-default-1';
+        let activeExamSession = null;
+        let examTimerInterval = null;
+        let snapshotIntervalTimer = null;
+        let fullscreenGuardInterval = null;
+        let lastMonotonicTickMs = 0;
+        let initialViewportArea = 0;
+        let cameraStream = null;
+        let cameraStatusNote = 'Menunggu inisialisasi kamera...';
+        let cameraBlockedFlag = false;
+        let participantSearchQuery = '';
+        let participantTrackFilter = 'all';
+
+        // ==================== 2. UTILITAS UMUM & FULLSCREEN ====================
+        function isFullscreenActive() {
+            return Boolean(
+                document.fullscreenElement ||
+                document.webkitFullscreenElement ||
+                document.mozFullScreenElement ||
+                document.msFullscreenElement
+            );
+        }
+
+        async function requestExamFullscreen() {
+            const elem = document.documentElement;
+            if (!elem || isFullscreenActive()) return true;
+            try {
+                if (elem.requestFullscreen) {
+                    await elem.requestFullscreen({ navigationUI: 'hide' });
+                } else if (elem.webkitRequestFullscreen) {
+                    await elem.webkitRequestFullscreen();
+                } else if (elem.msRequestFullscreen) {
+                    await elem.msRequestFullscreen();
+                }
+                return isFullscreenActive();
+            } catch (_) {
+                return false;
+            }
+        }
+
+        async function exitExamFullscreen() {
+            if (!isFullscreenActive()) return;
+            try {
+                if (document.exitFullscreen) {
+                    await document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    await document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) {
+                    await document.msExitFullscreen();
+                }
+            } catch (_) {}
+        }
+
+        function showFullscreenLockOverlay(customReason = '') {
+            if (!activeExamSession || currentUser?.role !== 'student') return;
+            let overlay = document.getElementById('fullscreenLockOverlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'fullscreenLockOverlay';
+                overlay.className = 'fixed inset-0 z-50 bg-slate-950 flex items-center justify-center p-4';
+                document.body.appendChild(overlay);
+            }
+            overlay.innerHTML = `
+                <div class="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-rose-200 p-6 text-center space-y-4">
+                    <div class="w-14 h-14 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center text-2xl mx-auto">
+                        <i class="fa-solid fa-expand"></i>
+                    </div>
+                    <div class="space-y-1.5">
+                        <span class="inline-block px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 text-[11px] font-extrabold">
+                            LAYAR SOAL DIKUNCI SEMENTARA
+                        </span>
+                        <h3 class="text-base font-extrabold text-slate-900">Mode Layar Penuh Wajib Aktif</h3>
+                        <p class="text-xs text-slate-600 leading-relaxed">
+                            ${escapeHtml(customReason || 'Anda terdeteksi keluar dari tampilan layar penuh saat ujian berlangsung. Ketuk tombol di bawah untuk mengaktifkan kembali layar penuh dan membuka soal.')}
+                        </p>
+                    </div>
+                    <button type="button" onclick="reenterExamFullscreenNow()"
+                        class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white text-xs font-extrabold shadow-lg transition">
+                        <i class="fa-solid fa-expand mr-1.5"></i>Kembali ke Layar Penuh
+                    </button>
+                </div>
+            `;
+            overlay.classList.remove('hidden');
+        }
+
+        function hideFullscreenLockOverlay() {
+            const overlay = document.getElementById('fullscreenLockOverlay');
+            if (overlay) {
+                overlay.classList.add('hidden');
+            }
+        }
+
+        window.reenterExamFullscreenNow = async function() {
+            const ok = await requestExamFullscreen();
+            if (ok || isFullscreenActive()) {
+                hideFullscreenLockOverlay();
+            } else {
+                // Fallback ramah Safari iOS yang tidak mendukung Fullscreen API standar pada elemen non-video
+                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+                if (isIOS) {
+                    hideFullscreenLockOverlay();
+                    showModalMessage(
+                        'Mode Fokus Perangkat iOS',
+                        'Peramban Safari iOS membatasi API layar penuh standar. Tetap berada di tab ini dan jangan berpindah aplikasi agar tidak tercatat sebagai pelanggaran.',
+                        'info'
+                    );
+                }
+            }
+        };
+
+        function escapeHtml(value) {
+            if (value === null || value === undefined) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function getDeviceToken() {
+            let token = localStorage.getItem(DEVICE_TOKEN_KEY);
+            if (!token) {
+                token = 'dev-' + Math.random().toString(36).slice(2) + '-' + Date.now();
+                localStorage.setItem(DEVICE_TOKEN_KEY, token);
+            }
+            return token;
+        }
+
+        function formatSeconds(sec) {
+            const s = Math.max(0, Math.floor(Number(sec) || 0));
+            const hrs = Math.floor(s / 3600);
+            const mins = Math.floor((s % 3600) / 60);
+            const rem = s % 60;
+            if (hrs > 0) {
+                return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+            }
+            return `${String(mins).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+        }
+
+        function formatDateTimeDisplay(val) {
+            if (!val) return 'Fleksibel (Kapan Saja)';
+            try {
+                const d = new Date(val);
+                if (isNaN(d.getTime())) return val;
+                return d.toLocaleString('id-ID', {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            } catch (_) {
+                return val;
+            }
+        }
+
+        function getFolderScheduleStatus(folder) {
+            const now = Date.now();
+            if (folder.scheduleStart) {
+                const start = new Date(folder.scheduleStart).getTime();
+                if (!isNaN(start) && now < start) {
+                    return { code: 'upcoming', label: 'Belum Dibuka', canEnter: false };
+                }
+            }
+            if (folder.scheduleEnd) {
+                const end = new Date(folder.scheduleEnd).getTime();
+                if (!isNaN(end) && now > end) {
+                    return { code: 'closed', label: 'Waktu Berakhir', canEnter: false };
+                }
+            }
+            return { code: 'open', label: 'Sedang Dibuka', canEnter: true };
+        }
+
+        function getAdminUsers() {
+            return (appState.users || []).filter(u => u.role === 'admin');
+        }
+
+        function hasRegisteredAdmin() {
+            return getAdminUsers().length > 0;
+        }
+
+        function getActiveAdminFolder() {
+            const folders = appState.folders || [];
+            let found = folders.find(f => f.id === selectedAdminFolderId);
+            if (!found && folders.length > 0) {
+                selectedAdminFolderId = folders[0].id;
+                found = folders[0];
+            }
+            return found || null;
+        }
+
+        function getAllSubmissionsList() {
+            return Object.values(appState.submissionsMap || {}).sort(
+                (a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0)
+            );
+        }
+
+        function getAllLiveSessionsList() {
+            return Object.values(appState.liveSessionsMap || {});
+        }
+
+        function showModalMessage(title, message, tone = 'info') {
+            const modal = document.getElementById('globalModal');
+            const box = document.getElementById('globalModalBox');
+            if (!modal || !box) return;
+
+            const iconMap = {
+                success: { bg: 'bg-emerald-100 text-emerald-600', icon: 'fa-circle-check' },
+                warning: { bg: 'bg-amber-100 text-amber-600', icon: 'fa-triangle-exclamation' },
+                error: { bg: 'bg-rose-100 text-rose-600', icon: 'fa-circle-xmark' },
+                info: { bg: 'bg-blue-100 text-blue-600', icon: 'fa-circle-info' }
+            };
+            const style = iconMap[tone] || iconMap.info;
+
+            box.innerHTML = `
+                <div class="flex items-start gap-3">
+                    <div class="w-10 h-10 rounded-xl ${style.bg} flex items-center justify-center shrink-0 text-lg">
+                        <i class="fa-solid ${style.icon}"></i>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <h3 class="text-sm font-extrabold text-slate-900">${escapeHtml(title)}</h3>
+                        <p class="text-xs text-slate-600 mt-1 leading-relaxed">${escapeHtml(message)}</p>
+                    </div>
+                </div>
+                <div class="mt-5 flex justify-end">
+                    <button type="button" onclick="closeGlobalModal()"
+                        class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold">
+                        Mengerti
+                    </button>
+                </div>
+            `;
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        window.closeGlobalModal = function() {
+            const modal = document.getElementById('globalModal');
+            if (modal) {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }
+        };
+
+        function openDynamicModal(htmlContent) {
+            const modal = document.getElementById('dynamicModal');
+            const body = document.getElementById('dynamicModalBody');
+            if (!modal || !body) return;
+            body.innerHTML = htmlContent;
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        window.closeDynamicModal = function() {
+            const modal = document.getElementById('dynamicModal');
+            if (modal) {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }
+        };
+
+        // ==================== 3. NORMALISASI & PENYIMPANAN CLOUD TERPECAH ====================
+        function normalizeFolder(folder, idx = 0) {
+            const sec = folder.security || {};
+            const validPolicy = ['required', 'optional', 'off'].includes(sec.cameraPolicy)
+                ? sec.cameraPolicy
+                : 'optional';
+
+            return {
+                id: folder.id || ('folder-' + Date.now() + '-' + idx),
+                title: folder.title || 'Paket Ujian ' + (idx + 1),
+                subject: folder.subject || 'Umum',
+                description: folder.description || '',
+                scheduleStart: folder.scheduleStart || '',
+                scheduleEnd: folder.scheduleEnd || '',
+                durationMinutes: Math.max(1, Number(folder.durationMinutes) || 45),
+                tokenEnabled: Boolean(folder.tokenEnabled),
+                tokenCode: (folder.tokenCode || 'CBT2026').toUpperCase(),
+                security: {
+                    cameraPolicy: validPolicy,
+                    randomizeQuestions: sec.randomizeQuestions !== undefined ? Boolean(sec.randomizeQuestions) : true,
+                    randomizeOptions: sec.randomizeOptions !== undefined ? Boolean(sec.randomizeOptions) : true,
+                    watermarkEnabled: sec.watermarkEnabled !== undefined ? Boolean(sec.watermarkEnabled) : true,
+                    periodicSnapshots: sec.periodicSnapshots !== undefined ? Boolean(sec.periodicSnapshots) : true,
+                    snapshotIntervalSec: Math.max(20, Number(sec.snapshotIntervalSec) || 45),
+                    blockShortcuts: sec.blockShortcuts !== undefined ? Boolean(sec.blockShortcuts) : true,
+                    detectSplitScreen: sec.detectSplitScreen !== undefined ? Boolean(sec.detectSplitScreen) : true,
+                    singleSessionLock: sec.singleSessionLock !== undefined ? Boolean(sec.singleSessionLock) : true
+                },
+                questions: Array.isArray(folder.questions) ? folder.questions : []
+            };
+        }
+
+        function normalizeMetaDoc(raw) {
+            const data = raw || {};
+            const folders = Array.isArray(data.folders) && data.folders.length > 0
+                ? data.folders.map((f, idx) => normalizeFolder(f, idx))
+                : DEFAULT_STATE.folders.map((f, idx) => normalizeFolder(f, idx));
+
+            let deviceLocks = {};
+            if (typeof data.activeDeviceLocks === 'string') {
+                try { deviceLocks = JSON.parse(data.activeDeviceLocks) || {}; } catch (_) { deviceLocks = {}; }
+            } else if (data.activeDeviceLocks && typeof data.activeDeviceLocks === 'object') {
+                deviceLocks = data.activeDeviceLocks;
+            }
+
+            return {
+                folders,
+                users: Array.isArray(data.users) ? data.users : JSON.parse(JSON.stringify(DEFAULT_STATE.users)),
+                activeDeviceLocks: deviceLocks
+            };
+        }
+
+        function saveLocalMirror() {
+            try {
+                localStorage.setItem(LOCAL_MIRROR_KEY, JSON.stringify(appState));
+            } catch (_) {}
+        }
+
+        function loadLocalMirror() {
+            try {
+                const raw = localStorage.getItem(LOCAL_MIRROR_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                const meta = normalizeMetaDoc(parsed);
+                return {
+                    ...meta,
+                    submissionsMap: parsed.submissionsMap && typeof parsed.submissionsMap === 'object' ? parsed.submissionsMap : {},
+                    liveSessionsMap: parsed.liveSessionsMap && typeof parsed.liveSessionsMap === 'object' ? parsed.liveSessionsMap : {}
+                };
+            } catch (_) {
+                return null;
+            }
+        }
+
+        // Antrean sinkronisasi offline -> online
+        function getPendingQueue() {
+            try {
+                return JSON.parse(localStorage.getItem(PENDING_QUEUE_KEY) || '{}');
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function enqueueSyncTask(taskKey, payload) {
+            try {
+                const q = getPendingQueue();
+                q[taskKey] = {
+                    ...payload,
+                    queuedAt: Date.now()
+                };
+                localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(q));
+            } catch (_) {}
+        }
+
+        function clearSyncTask(taskKey) {
+            try {
+                const q = getPendingQueue();
+                if (q[taskKey]) {
+                    delete q[taskKey];
+                    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(q));
+                }
+            } catch (_) {}
+        }
+
+        function hasAnyPendingQueue() {
+            return Object.keys(getPendingQueue()).length > 0;
+        }
+
+        function resolveFirebaseConfig() {
+            try {
+                const customRaw = localStorage.getItem(CUSTOM_FIREBASE_CONFIG_KEY);
+                if (customRaw) {
+                    const parsed = JSON.parse(customRaw);
+                    if (parsed && parsed.apiKey && parsed.projectId) {
+                        return { config: parsed, source: 'Proyek Kustom Anda' };
+                    }
+                }
+            } catch (_) {}
+
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                try {
+                    const envCfg = typeof __firebase_config === 'string'
+                        ? JSON.parse(__firebase_config)
+                        : __firebase_config;
+                    if (envCfg && envCfg.apiKey && envCfg.projectId) {
+                        return { config: envCfg, source: 'Cloud Bawaan' };
+                    }
+                } catch (_) {}
+            }
+            return { config: null, source: 'Belum Terhubung' };
+        }
+
+        function updateSyncStatusBadge(text) {
+            cloudSyncStatus = text;
+            const els = document.querySelectorAll('[data-sync-badge]');
+            els.forEach(el => {
+                el.textContent = text;
+            });
+        }
+
+        function getMetaDocRef() {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'cbt_config', 'main_meta');
+        }
+
+        function getResultDocRef(shardKey) {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'cbt_results', shardKey);
+        }
+
+        function getLiveDocRef(shardKey) {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'cbt_live', shardKey);
+        }
+
+        async function connectFirebaseRealtime(reRender = true) {
+            const { config, source } = resolveFirebaseConfig();
+            if (!config) {
+                cloudConnectedLive = false;
+                activeFirebaseProjectId = '-';
+                updateSyncStatusBadge('Mode Lokal (Hubungkan Firebase untuk Sinkronisasi Lintas Perangkat)');
+                if (reRender) renderApp();
+                return false;
+            }
+
+            try {
+                updateSyncStatusBadge('Menghubungkan Firebase (' + config.projectId + ')...');
+                const appName = 'nbt-sharded-' + config.projectId + '-' + Date.now();
+                const fbApp = initializeApp(config, appName);
+                auth = getAuth(fbApp);
+                db = getFirestore(fbApp);
+
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token && source === 'Cloud Bawaan') {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // 1. Inisialisasi / baca dokumen meta (folders, users, locks)
+                const metaRef = getMetaDocRef();
+                const metaSnap = await getDoc(metaRef);
+                if (metaSnap.exists()) {
+                    const normalized = normalizeMetaDoc(metaSnap.data());
+                    appState.folders = normalized.folders;
+                    appState.users = normalized.users;
+                    appState.activeDeviceLocks = normalized.activeDeviceLocks;
+                    saveLocalMirror();
+                } else {
+                    await setDoc(metaRef, {
+                        folders: appState.folders,
+                        users: appState.users,
+                        activeDeviceLocks: JSON.stringify(appState.activeDeviceLocks || {}),
+                        updatedAt: new Date().toISOString()
+                    }, { merge: true });
+                }
+
+                // Lepas listener lama jika ada
+                if (unsubscribeMeta) try { unsubscribeMeta(); } catch (_) {}
+                if (unsubscribeResults) try { unsubscribeResults(); } catch (_) {}
+                if (unsubscribeLive) try { unsubscribeLive(); } catch (_) {}
+
+                const handleSnapshotPermissionError = (err) => {
+                    console.warn('Firestore listener permission/connection fallback:', err?.code || err);
+                    cloudConnectedLive = false;
+                    if (unsubscribeMeta) { try { unsubscribeMeta(); } catch (_) {} unsubscribeMeta = null; }
+                    if (unsubscribeResults) { try { unsubscribeResults(); } catch (_) {} unsubscribeResults = null; }
+                    if (unsubscribeLive) { try { unsubscribeLive(); } catch (_) {} unsubscribeLive = null; }
+                    updateSyncStatusBadge('Mode Lokal (Izin Firestore Ditolak — Periksa Rules)');
+                    if (!activeExamSession) renderApp();
+                };
+
+                // Listener real-time dokumen meta
+                unsubscribeMeta = onSnapshot(metaRef, (snap) => {
+                    if (!snap.exists()) return;
+                    const normalized = normalizeMetaDoc(snap.data());
+                    appState.folders = normalized.folders;
+                    appState.users = normalized.users;
+                    appState.activeDeviceLocks = normalized.activeDeviceLocks;
+                    saveLocalMirror();
+
+                    if (currentUser && currentUser.role === 'student') {
+                        const freshUser = appState.users.find(u => u.id === currentUser.id);
+                        if (!freshUser) {
+                            handleLogout(true);
+                            return;
+                        }
+                        currentUser = freshUser;
+
+                        // Cek penguncian sesi tunggal (anti-login ganda)
+                        const folder = (appState.folders || []).find(f => f.id === activeExamSession?.folderId);
+                        if (activeExamSession && folder?.security?.singleSessionLock) {
+                            const cloudLock = (appState.activeDeviceLocks || {})[currentUser.id];
+                            if (cloudLock && cloudLock !== getDeviceToken()) {
+                                stopExamProctoring();
+                                activeExamSession = null;
+                                handleLogout(true);
+                                showModalMessage(
+                                    'Sesi Terkunci (Login Ganda Terdeteksi)',
+                                    'Akun Anda login pada perangkat lain. Sesi ujian di perangkat ini otomatis dihentikan.',
+                                    'warning'
+                                );
+                                return;
+                            }
+                        }
+                    }
+
+                    if (!activeExamSession) {
+                        renderApp();
+                    }
+                }, handleSnapshotPermissionError);
+
+                // 2. Listener real-time koleksi hasil ujian terpecah (cbt_results)
+                const resultsColRef = collection(db, 'artifacts', appId, 'public', 'data', 'cbt_results');
+                unsubscribeResults = onSnapshot(resultsColRef, (querySnap) => {
+                    const nextMap = { ...(appState.submissionsMap || {}) };
+                    querySnap.forEach(docItem => {
+                        nextMap[docItem.id] = docItem.data();
+                    });
+                    appState.submissionsMap = nextMap;
+                    saveLocalMirror();
+                    if (!activeExamSession) {
+                        renderApp();
+                    }
+                }, handleSnapshotPermissionError);
+
+                // 3. Listener real-time koleksi sesi aktif terpecah (cbt_live)
+                const liveColRef = collection(db, 'artifacts', appId, 'public', 'data', 'cbt_live');
+                unsubscribeLive = onSnapshot(liveColRef, (querySnap) => {
+                    const nextLive = {};
+                    querySnap.forEach(docItem => {
+                        nextLive[docItem.id] = docItem.data();
+                    });
+                    appState.liveSessionsMap = nextLive;
+                    saveLocalMirror();
+
+                    // Jika Admin memaksa kumpulkan ujian peserta ini
+                    if (activeExamSession && currentUser?.role === 'student') {
+                        const shardKey = `${activeExamSession.folderId}_${currentUser.id}`;
+                        const liveDoc = nextLive[shardKey];
+                        if (liveDoc && liveDoc.forceSubmittedByAdmin) {
+                            const sessCopy = activeExamSession;
+                            stopExamProctoring();
+                            exitExamFullscreen();
+                            finalizeExamSubmission(sessCopy, 'Dikunci & Dikumpulkan Paksa oleh Admin').then(() => {
+                                renderApp();
+                                showModalMessage('Ujian Dikunci Pengawas', 'Administrator telah menutup dan mengumpulkan sesi ujian Anda.', 'warning');
+                            });
+                            return;
+                        }
+                    }
+
+                    if (!activeExamSession) {
+                        renderApp();
+                    }
+                }, handleSnapshotPermissionError);
+
+                cloudConnectedLive = true;
+                activeFirebaseProjectId = config.projectId;
+                updateSyncStatusBadge('Firebase Aktif (' + config.projectId + ')');
+                await flushPendingSyncQueue();
+                if (reRender) renderApp();
+                return true;
+            } catch (err) {
+                console.warn('Koneksi Firebase tertunda:', err);
+                cloudConnectedLive = false;
+                activeFirebaseProjectId = config.projectId || '-';
+                updateSyncStatusBadge('Mode Lokal (Periksa Rules / Auth Anonim Firebase)');
+                if (reRender) renderApp();
+                return false;
+            }
+        }
+
+        // Simpan dokumen meta (folders, users, locks)
+        async function persistMetaState() {
+            saveLocalMirror();
+            const payload = {
+                folders: appState.folders,
+                users: appState.users,
+                activeDeviceLocks: JSON.stringify(appState.activeDeviceLocks || {}),
+                updatedAt: new Date().toISOString()
+            };
+
+            if (!navigator.onLine || !db || !cloudConnectedLive) {
+                enqueueSyncTask('meta', { type: 'meta', data: payload });
+                updateSyncStatusBadge(navigator.onLine ? 'Tersimpan Lokal (Menunggu Koneksi Firebase)' : 'Offline — Antrean Sinkronisasi Aktif');
+                return;
+            }
+
+            try {
+                updateSyncStatusBadge('Menyinkronkan Pengaturan...');
+                await setDoc(getMetaDocRef(), payload, { merge: true });
+                clearSyncTask('meta');
+                updateSyncStatusBadge('Firebase Aktif (' + activeFirebaseProjectId + ')');
+            } catch (_) {
+                enqueueSyncTask('meta', { type: 'meta', data: payload });
+                updateSyncStatusBadge('Tersimpan Lokal (Antrean Sinkronisasi)');
+            }
+        }
+
+        // Simpan dokumen sesi langsung siswa secara terpecah: cbt_live/{folderId}_{studentId}
+        async function persistLiveSessionShard(sessionObj) {
+            if (!sessionObj) return;
+            const shardKey = `${sessionObj.folderId}_${sessionObj.studentId}`;
+            appState.liveSessionsMap = appState.liveSessionsMap || {};
+            appState.liveSessionsMap[shardKey] = sessionObj;
+            saveLocalMirror();
+
+            if (!navigator.onLine || !db || !cloudConnectedLive) {
+                enqueueSyncTask('live_' + shardKey, { type: 'live', shardKey, data: sessionObj });
+                updateSyncStatusBadge(navigator.onLine ? 'Tersimpan Lokal' : 'Offline — Jawaban Aman di Perangkat');
+                return;
+            }
+
+            try {
+                await setDoc(getLiveDocRef(shardKey), {
+                    ...sessionObj,
+                    updatedAt: new Date().toISOString()
+                }, { merge: true });
+                clearSyncTask('live_' + shardKey);
+                updateSyncStatusBadge('Tersinkronisasi (' + activeFirebaseProjectId + ')');
+            } catch (_) {
+                enqueueSyncTask('live_' + shardKey, { type: 'live', shardKey, data: sessionObj });
+                updateSyncStatusBadge('Tersimpan Lokal (Menunggu Sinyal)');
+            }
+        }
+
+        // Simpan dokumen hasil ujian siswa secara terpecah: cbt_results/{folderId}_{studentId}
+        async function persistSubmissionShard(submissionObj) {
+            const shardKey = `${submissionObj.folderId}_${submissionObj.studentId}`;
+            appState.submissionsMap = appState.submissionsMap || {};
+            appState.submissionsMap[shardKey] = submissionObj;
+            if (appState.liveSessionsMap && appState.liveSessionsMap[shardKey]) {
+                delete appState.liveSessionsMap[shardKey];
+            }
+            saveLocalMirror();
+
+            if (!navigator.onLine || !db || !cloudConnectedLive) {
+                enqueueSyncTask('result_' + shardKey, { type: 'result', shardKey, data: submissionObj });
+                updateSyncStatusBadge('Offline — Hasil Ujian Akan Terkirim Otomatis Saat Online');
+                return;
+            }
+
+            try {
+                updateSyncStatusBadge('Mengirim Hasil Ujian ke Cloud...');
+                await setDoc(getResultDocRef(shardKey), submissionObj, { merge: true });
+                try {
+                    await deleteDoc(getLiveDocRef(shardKey));
+                } catch (_) {}
+                clearSyncTask('result_' + shardKey);
+                clearSyncTask('live_' + shardKey);
+                updateSyncStatusBadge('Firebase Aktif (' + activeFirebaseProjectId + ')');
+            } catch (_) {
+                enqueueSyncTask('result_' + shardKey, { type: 'result', shardKey, data: submissionObj });
+                updateSyncStatusBadge('Tersimpan Lokal (Menunggu Sinyal)');
+            }
+        }
+
+        async function flushPendingSyncQueue() {
+            if (!navigator.onLine) return;
+            const { config } = resolveFirebaseConfig();
+            if (config && (!db || !cloudConnectedLive)) {
+                await connectFirebaseRealtime(false);
+            }
+            if (!db || !cloudConnectedLive) return;
+
+            const queue = getPendingQueue();
+            const keys = Object.keys(queue);
+            if (keys.length === 0) return;
+
+            updateSyncStatusBadge('Menyinkronkan ' + keys.length + ' antrean ke Cloud...');
+            for (const key of keys) {
+                const item = queue[key];
+                try {
+                    if (item.type === 'meta') {
+                        await setDoc(getMetaDocRef(), item.data, { merge: true });
+                    } else if (item.type === 'live') {
+                        await setDoc(getLiveDocRef(item.shardKey), item.data, { merge: true });
+                    } else if (item.type === 'result') {
+                        await setDoc(getResultDocRef(item.shardKey), item.data, { merge: true });
+                        try { await deleteDoc(getLiveDocRef(item.shardKey)); } catch (_) {}
+                    }
+                    clearSyncTask(key);
+                } catch (_) {}
+            }
+            updateSyncStatusBadge('Firebase Aktif (' + activeFirebaseProjectId + ')');
+        }
+
+        // ==================== 4. PANEL KONFIGURASI FIREBASE & RULES ====================
+        function renderFirebaseCloudPanel() {
+            const { config, source } = resolveFirebaseConfig();
+            const isConnected = Boolean(cloudConnectedLive && config);
+            const statusBg = isConnected
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-amber-50 border-amber-200 text-amber-900';
+            const dotColor = isConnected ? 'bg-emerald-500' : 'bg-amber-500';
+            const projectLabel = config && config.projectId ? config.projectId : 'Belum Dikonfigurasi';
+
+            return `
+                <div class="rounded-2xl border ${statusBg} p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div class="flex items-start gap-3">
+                        <span class="w-2.5 h-2.5 rounded-full ${dotColor} mt-1.5 shrink-0"></span>
+                        <div class="text-xs">
+                            <div class="font-extrabold flex flex-wrap items-center gap-2">
+                                <span>Penyimpanan Cloud Terpecah (Firebase Firestore)</span>
+                                <span class="px-2 py-0.5 rounded-full bg-white/80 text-[10px] font-bold border border-black/10">${escapeHtml(source)}</span>
+                            </div>
+                            <div class="opacity-90 mt-0.5">
+                                Project ID: <strong>${escapeHtml(projectLabel)}</strong> &bull; <span data-sync-badge>${escapeHtml(cloudSyncStatus)}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 shrink-0">
+                        <button type="button" onclick="manualTestCloudSync()"
+                            class="px-3 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-xs font-bold">
+                            <i class="fa-solid fa-rotate mr-1"></i>Uji Sinkronisasi
+                        </button>
+                        <button type="button" onclick="openFirebaseConfigModal()"
+                            class="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold">
+                            <i class="fa-solid fa-cloud-arrow-up mr-1.5"></i>${config ? 'Konfigurasi Firebase' : 'Hubungkan Firebase'}
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        window.manualTestCloudSync = async function() {
+            await flushPendingSyncQueue();
+            await persistMetaState();
+            showModalMessage(
+                cloudConnectedLive ? 'Sinkronisasi Berhasil' : 'Mode Penyimpanan Lokal',
+                cloudConnectedLive
+                    ? 'Koneksi ke Firebase Firestore (' + activeFirebaseProjectId + ') aktif dan seluruh data terpecah berhasil disinkronkan.'
+                    : 'Belum terhubung ke Firebase. Silakan klik tombol Konfigurasi Firebase dan tempelkan objek firebaseConfig proyek Anda.',
+                cloudConnectedLive ? 'success' : 'warning'
+            );
+        };
+
+        window.openFirebaseConfigModal = function() {
+            const { config } = resolveFirebaseConfig();
+            const sampleObj = {
+                apiKey: 'AIzaSyContohApiKeyAnda',
+                authDomain: 'proyek-anda.firebaseapp.com',
+                projectId: 'proyek-anda',
+                storageBucket: 'proyek-anda.firebasestorage.app',
+                messagingSenderId: '1234567890',
+                appId: '1:1234567890:web:abcdef123456'
+            };
+            const initialJson = config ? JSON.stringify(config, null, 2) : JSON.stringify(sampleObj, null, 2);
+
+            const recommendedRules = `rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /artifacts/${appId}/public/data/{col}/{docId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}`;
+
+            openDynamicModal(`
+                <div class="space-y-4">
+                    <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <div>
+                            <h3 class="text-base font-extrabold text-slate-900">Hubungkan Proyek Firebase Firestore</h3>
+                            <p class="text-xs text-slate-500">Arsitektur dokumen terpecah (<code>cbt_config</code>, <code>cbt_live</code>, <code>cbt_results</code>) anti-tabrakan saat ujian massal.</p>
+                        </div>
+                        <button type="button" onclick="closeDynamicModal()" class="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+
+                    <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-950 space-y-1.5">
+                        <div class="font-extrabold">Langkah Persiapan di Firebase Console:</div>
+                        <div>1. Buka <strong>Authentication &gt; Sign-in method</strong> lalu aktifkan <strong>Anonymous</strong>.</div>
+                        <div>2. Buka <strong>Firestore Database &gt; Rules</strong> dan gunakan aturan berikut agar aplikasi terautentikasi dapat membaca &amp; menulis:</div>
+                        <pre id="firestoreRulesSnippet" class="bg-slate-900 text-emerald-300 p-2.5 rounded-lg text-[11px] font-mono overflow-x-auto select-all">${escapeHtml(recommendedRules)}</pre>
+                        <button type="button" onclick="copyRecommendedRules()" class="px-2.5 py-1 rounded-lg bg-blue-600 text-white text-[11px] font-bold">
+                            <i class="fa-regular fa-copy mr-1"></i>Salin Firestore Rules
+                        </button>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1.5">Tempelkan Objek <code>firebaseConfig</code> Anda:</label>
+                        <textarea id="firebaseConfigInput" rows="7" class="w-full rounded-xl border border-slate-300 p-3 text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:outline-none">${escapeHtml(initialJson)}</textarea>
+                    </div>
+
+                    <div class="flex flex-wrap items-center justify-between gap-2 pt-2">
+                        <button type="button" onclick="resetCustomFirebaseConfig()" class="px-3 py-2 rounded-xl border border-rose-200 text-rose-700 hover:bg-rose-50 text-xs font-bold">
+                            Hapus Konfigurasi Kustom
+                        </button>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="closeDynamicModal()" class="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold">
+                                Batal
+                            </button>
+                            <button type="button" onclick="saveFirebaseConfigFromUI()" class="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold">
+                                Simpan &amp; Hubungkan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `);
+        };
+
+        window.copyRecommendedRules = function() {
+            const el = document.getElementById('firestoreRulesSnippet');
+            if (!el) return;
+            const temp = document.createElement('textarea');
+            temp.value = el.textContent;
+            document.body.appendChild(temp);
+            temp.select();
+            try { document.execCommand('copy'); } catch (_) {}
+            document.body.removeChild(temp);
+            showModalMessage('Rules Disalin', 'Rekomendasi Firestore Security Rules berhasil disalin ke papan klip.', 'success');
+        };
+
+        window.saveFirebaseConfigFromUI = async function() {
+            const inputEl = document.getElementById('firebaseConfigInput');
+            if (!inputEl) return;
+            let raw = inputEl.value.trim();
+            if (!raw) {
+                showModalMessage('Input Kosong', 'Silakan tempelkan objek firebaseConfig terlebih dahulu.', 'warning');
+                return;
+            }
+
+            try {
+                const braceStart = raw.indexOf('{');
+                const braceEnd = raw.lastIndexOf('}');
+                if (braceStart !== -1 && braceEnd !== -1) {
+                    raw = raw.slice(braceStart, braceEnd + 1);
+                }
+                const normalizedJson = raw
+                    .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":')
+                    .replace(/'/g, '"')
+                    .replace(/,\s*}/g, '}');
+                const parsedCfg = JSON.parse(normalizedJson);
+
+                if (!parsedCfg.apiKey || !parsedCfg.projectId) {
+                    showModalMessage('Konfigurasi Tidak Lengkap', 'Pastikan objek berisi minimal apiKey dan projectId.', 'error');
+                    return;
+                }
+
+                localStorage.setItem(CUSTOM_FIREBASE_CONFIG_KEY, JSON.stringify(parsedCfg));
+                closeDynamicModal();
+                const ok = await connectFirebaseRealtime(true);
+                if (ok) {
+                    await persistMetaState();
+                    showModalMessage('Firebase Terhubung', 'Berhasil terhubung ke proyek Firebase: ' + parsedCfg.projectId, 'success');
+                } else {
+                    showModalMessage('Koneksi Tertunda', 'Konfigurasi tersimpan, namun koneksi Firebase gagal. Pastikan Anonymous Auth & Firestore Rules aktif.', 'warning');
+                }
+            } catch (_) {
+                showModalMessage('Format Tidak Valid', 'Pastikan format objek firebaseConfig yang ditempelkan valid.', 'error');
+            }
+        };
+
+        window.resetCustomFirebaseConfig = async function() {
+            localStorage.removeItem(CUSTOM_FIREBASE_CONFIG_KEY);
+            cloudConnectedLive = false;
+            db = null;
+            closeDynamicModal();
+            await connectFirebaseRealtime(true);
+            showModalMessage('Konfigurasi Dihapus', 'Konfigurasi Firebase kustom telah dihapus.', 'info');
+        };
+
+        // ==================== 5. AUTENTIKASI & PENGUNCIAN ADMIN PERTAMA ====================
+        window.setLoginRole = function(role) {
+            loginRole = role;
+            renderApp();
+        };
+
+        window.setLoginCategory = function(cat) {
+            loginCategory = cat;
+            renderApp();
+        };
+
+        window.handleInitialAdminRegistration = async function(e) {
+            e.preventDefault();
+            // Penguncian keras: jika sudah ada 1 admin, pendaftaran mandiri tidak diizinkan lagi
+            if (hasRegisteredAdmin()) {
+                renderApp();
+                showModalMessage('Pendaftaran Terkunci', 'Akun Administrator sudah terdaftar. Silakan masuk menggunakan akun Admin yang ada.', 'warning');
+                return;
+            }
+
+            const fullName = document.getElementById('initAdminName')?.value.trim();
+            const institution = document.getElementById('initAdminInst')?.value.trim();
+            const username = document.getElementById('initAdminUser')?.value.trim();
+            const password = document.getElementById('initAdminPass')?.value.trim();
+            const accessPin = document.getElementById('initAdminPin')?.value.trim();
+
+            if (!fullName || !username || !password || !accessPin) {
+                showModalMessage('Data Belum Lengkap', 'Lengkapi Nama, Username, Password, dan Kode Akses Administrator.', 'warning');
+                return;
+            }
+            if (password.length < 4) {
+                showModalMessage('Password Terlalu Pendek', 'Gunakan minimal 4 karakter untuk password Administrator.', 'warning');
+                return;
+            }
+
+            const newAdmin = {
+                id: 'adm-' + Date.now(),
+                role: 'admin',
+                fullName,
+                institution: institution || 'Penyelenggara Ujian',
+                username,
+                password,
+                accessPin,
+                participantId: 'ADM-001',
+                category: 'admin'
+            };
+
+            appState.users.push(newAdmin);
+            await persistMetaState();
+
+            currentUser = newAdmin;
+            activeMenu = 'ujian';
+            localStorage.setItem(SESSION_KEY, JSON.stringify({ userId: newAdmin.id }));
+            renderApp();
+            showModalMessage(
+                'Administrator Aktif & Pendaftaran Terkunci',
+                'Akun Administrator pertama berhasil diaktifkan. Formulir pendaftaran publik kini terkunci permanen.',
+                'success'
+            );
+        };
+
+        window.handleLogin = async function(e) {
+            e.preventDefault();
+            const username = document.getElementById('loginUsername')?.value.trim();
+            const password = document.getElementById('loginPassword')?.value.trim();
+            const pinInput = document.getElementById('loginAdminPin')?.value.trim() || '';
+
+            if (!username || !password) {
+                showModalMessage('Isi Data Login', 'Masukkan username dan password Anda.', 'warning');
+                return;
+            }
+
+            if (loginRole === 'admin') {
+                const matchedAdmin = appState.users.find(
+                    u => u.role === 'admin' && u.username.toLowerCase() === username.toLowerCase() && u.password === password
+                );
+                if (!matchedAdmin) {
+                    showModalMessage('Login Admin Gagal', 'Username atau password Administrator tidak sesuai.', 'error');
+                    return;
+                }
+                if (matchedAdmin.accessPin && matchedAdmin.accessPin !== pinInput) {
+                    showModalMessage('Kode PIN Salah', 'Kode Akses / PIN Administrator tidak cocok.', 'error');
+                    return;
+                }
+                currentUser = matchedAdmin;
+                activeMenu = 'ujian';
+                localStorage.setItem(SESSION_KEY, JSON.stringify({ userId: matchedAdmin.id }));
+                renderApp();
+                return;
+            }
+
+            const matchedStudent = appState.users.find(
+                u => u.role === 'student' &&
+                    u.username.toLowerCase() === username.toLowerCase() &&
+                    u.password === password &&
+                    (u.category || 'instansi') === loginCategory
+            );
+
+            if (!matchedStudent) {
+                showModalMessage('Login Peserta Gagal', 'Periksa kembali jalur peserta (Instansi/Mandiri), username, dan password Anda.', 'error');
+                return;
+            }
+
+            // Kunci sesi perangkat tunggal untuk peserta
+            const devToken = getDeviceToken();
+            appState.activeDeviceLocks = appState.activeDeviceLocks || {};
+            appState.activeDeviceLocks[matchedStudent.id] = devToken;
+            await persistMetaState();
+
+            currentUser = matchedStudent;
+            activeMenu = 'ujian';
+            localStorage.setItem(SESSION_KEY, JSON.stringify({ userId: matchedStudent.id }));
+
+            // Cek apakah peserta memiliki sesi ujian yang terputus/keluar sebelumnya
+            const liveEntries = getAllLiveSessionsList().filter(s => s.studentId === matchedStudent.id);
+            if (liveEntries.length > 0) {
+                await resumeInterruptedExamSession(liveEntries[0]);
+            } else {
+                renderApp();
+            }
+        };
+
+        window.handleLogout = async function(silent = false) {
+            stopExamProctoring();
+            await exitExamFullscreen();
+            if (currentUser && currentUser.role === 'student' && appState.activeDeviceLocks) {
+                delete appState.activeDeviceLocks[currentUser.id];
+                if (!silent) {
+                    await persistMetaState();
+                }
+            }
+            activeExamSession = null;
+            currentUser = null;
+            localStorage.removeItem(SESSION_KEY);
+            renderApp();
+        };
+
+        // ==================== 6. LOGIKA UJIAN, MONOTONIC TIMER & KAMERA ====================
+        function shuffleArray(arr) {
+            const copy = [...arr];
+            for (let i = copy.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [copy[i], copy[j]] = [copy[j], copy[i]];
+            }
+            return copy;
+        }
+
+        window.promptStartFolderExam = function(folderId) {
+            const folder = (appState.folders || []).find(f => f.id === folderId);
+            if (!folder || !currentUser) return;
+
+            const shardKey = `${folder.id}_${currentUser.id}`;
+            if ((appState.submissionsMap || {})[shardKey]) {
+                showModalMessage('Sudah Dikerjakan', 'Anda sudah menyelesaikan ujian pada folder ini.', 'info');
+                return;
+            }
+
+            const sched = getFolderScheduleStatus(folder);
+            if (!sched.canEnter) {
+                showModalMessage('Jadwal Tidak Aktif', 'Folder ujian ini saat ini berstatus: ' + sched.label, 'warning');
+                return;
+            }
+
+            if ((folder.questions || []).length === 0) {
+                showModalMessage('Soal Belum Tersedia', 'Administrator belum menambahkan soal ke dalam folder ini.', 'warning');
+                return;
+            }
+
+            if (folder.tokenEnabled) {
+                openDynamicModal(`
+                    <form onsubmit="verifyTokenAndStartExam(event, '${escapeHtml(folder.id)}')" class="space-y-4">
+                        <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                            <div>
+                                <h3 class="text-base font-extrabold text-slate-900">Masukkan Token Ujian</h3>
+                                <p class="text-xs text-slate-500">Folder: <strong>${escapeHtml(folder.title)}</strong></p>
+                            </div>
+                            <button type="button" onclick="closeDynamicModal()" class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600">
+                                <i class="fa-solid fa-xmark"></i>
+                            </button>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">Kode Token dari Pengawas / Admin</label>
+                            <input id="studentTokenInput" type="text" required autocomplete="off" placeholder="Contoh: CBT2026"
+                                class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm font-mono uppercase tracking-widest focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                        </div>
+                        <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-900">
+                            Saat ujian dimulai, tampilan otomatis masuk <strong>mode layar penuh</strong> dan kamera pengawas (${folder.security?.cameraPolicy === 'required' ? 'Wajib Aktif' : folder.security?.cameraPolicy === 'off' ? 'Nonaktif' : 'Opsional'}) akan disiapkan.
+                        </div>
+                        <div class="flex justify-end gap-2">
+                            <button type="button" onclick="closeDynamicModal()" class="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold">Batal</button>
+                            <button type="submit" class="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold">Verifikasi &amp; Mulai</button>
+                        </div>
+                    </form>
+                `);
+                return;
+            }
+
+            beginFolderExam(folder.id);
+        };
+
+        window.verifyTokenAndStartExam = function(e, folderId) {
+            e.preventDefault();
+            const folder = (appState.folders || []).find(f => f.id === folderId);
+            if (!folder) return;
+            const entered = (document.getElementById('studentTokenInput')?.value || '').trim().toUpperCase();
+            if (entered !== (folder.tokenCode || '').trim().toUpperCase()) {
+                showModalMessage('Token Tidak Valid', 'Kode token ujian yang Anda masukkan salah.', 'error');
+                return;
+            }
+            closeDynamicModal();
+            beginFolderExam(folder.id);
+        };
+
+        async function initializeExamCamera(policy) {
+            cameraBlockedFlag = false;
+            if (policy === 'off') {
+                cameraStatusNote = 'Kamera dinonaktifkan oleh Admin pada folder ini.';
+                return true;
+            }
+
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                cameraStatusNote = 'Peramban tidak mendukung akses kamera.';
+                cameraBlockedFlag = true;
+                return policy !== 'required';
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
+                    audio: false
+                });
+                cameraStream = stream;
+                cameraStatusNote = 'Kamera Pengawas Aktif';
+                const video = document.getElementById('proctorCameraVideo');
+                if (video) {
+                    video.srcObject = stream;
+                }
+                return true;
+            } catch (_) {
+                cameraBlockedFlag = true;
+                cameraStatusNote = 'Izin kamera ditolak/tidak ditemukan. Buka Pengaturan Situs di Chrome HP -> Izinkan Kamera.';
+                return policy !== 'required';
+            }
+        }
+
+        async function beginFolderExam(folderId) {
+            const folder = (appState.folders || []).find(f => f.id === folderId);
+            if (!folder || !currentUser) return;
+
+            const sec = folder.security || {};
+            const camOk = await initializeExamCamera(sec.cameraPolicy || 'optional');
+            if (!camOk) {
+                showModalMessage(
+                    'Kamera Wajib Diaktifkan',
+                    'Folder ujian ini mewajibkan kamera aktif. Izinkan akses kamera pada ikon gembok di bilah alamat Chrome HP/Laptop Anda lalu coba lagi.',
+                    'error'
+                );
+                return;
+            }
+
+            const baseQuestions = [...(folder.questions || [])];
+            const orderedQuestions = sec.randomizeQuestions ? shuffleArray(baseQuestions) : baseQuestions;
+
+            const questionOrder = orderedQuestions.map(q => q.id);
+            const optionOrders = {};
+            orderedQuestions.forEach(q => {
+                const indices = (q.options || []).map((_, idx) => idx);
+                optionOrders[q.id] = (sec.randomizeOptions && q.type !== 'uraian') ? shuffleArray(indices) : indices;
+            });
+
+            const sessionObj = {
+                folderId: folder.id,
+                folderTitle: folder.title,
+                studentId: currentUser.id,
+                studentName: currentUser.fullName,
+                participantId: currentUser.participantId || currentUser.username,
+                startedAt: new Date().toISOString(),
+                remainingSeconds: (Number(folder.durationMinutes) || 45) * 60,
+                currentIndex: 0,
+                questionOrder,
+                optionOrders,
+                answers: {},
+                violations: 0,
+                violationLogs: [],
+                snapshots: [],
+                forceSubmittedByAdmin: false
+            };
+
+            activeExamSession = sessionObj;
+            await persistLiveSessionShard(sessionObj);
+            await requestExamFullscreen();
+            renderApp();
+            startExamProctoring();
+        }
+
+        async function resumeInterruptedExamSession(savedSession) {
+            if (!savedSession || !currentUser) return;
+            const logs = Array.isArray(savedSession.violationLogs) ? [...savedSession.violationLogs] : [];
+            logs.push({
+                time: new Date().toLocaleTimeString('id-ID'),
+                reason: 'Keluar / menutup halaman ujian dan otomatis masuk kembali'
+            });
+
+            activeExamSession = {
+                ...savedSession,
+                violations: (Number(savedSession.violations) || 0) + 1,
+                violationLogs: logs
+            };
+
+            const folder = (appState.folders || []).find(f => f.id === activeExamSession.folderId);
+            await initializeExamCamera(folder?.security?.cameraPolicy || 'optional');
+            await persistLiveSessionShard(activeExamSession);
+            await requestExamFullscreen();
+            renderApp();
+            startExamProctoring();
+
+            if (!isFullscreenActive()) {
+                showFullscreenLockOverlay('Sesi ujian dipulihkan otomatis. Ketuk tombol di bawah untuk mengaktifkan kembali layar penuh.');
+            } else {
+                showModalMessage(
+                    'Sesi Ujian Dipulihkan Otomatis',
+                    'Anda langsung masuk kembali ke ruang ujian dengan jawaban dan sisa waktu terakhir, serta 1 pelanggaran dicatat.',
+                    'warning'
+                );
+            }
+        }
+
+        window.setSingleChoiceAnswer = async function(questionId, origIdx) {
+            if (!activeExamSession) return;
+            activeExamSession.answers[questionId] = origIdx;
+            renderApp();
+            await persistLiveSessionShard(activeExamSession);
+        };
+
+        window.toggleComplexChoiceAnswer = async function(questionId, origIdx) {
+            if (!activeExamSession) return;
+            const current = Array.isArray(activeExamSession.answers[questionId])
+                ? [...activeExamSession.answers[questionId]]
+                : [];
+            const pos = current.indexOf(origIdx);
+            if (pos === -1) current.push(origIdx);
+            else current.splice(pos, 1);
+            activeExamSession.answers[questionId] = current;
+            renderApp();
+            await persistLiveSessionShard(activeExamSession);
+        };
+
+        window.setEssayAnswer = function(questionId, value) {
+            if (!activeExamSession) return;
+            activeExamSession.answers[questionId] = value;
+            const shardKey = `${activeExamSession.folderId}_${activeExamSession.studentId}`;
+            appState.liveSessionsMap[shardKey] = activeExamSession;
+            saveLocalMirror();
+        };
+
+        window.navigateExamQuestion = async function(targetIndex) {
+            if (!activeExamSession) return;
+            const total = activeExamSession.questionOrder.length;
+            if (targetIndex < 0 || targetIndex >= total) return;
+            activeExamSession.currentIndex = targetIndex;
+            renderApp();
+            await persistLiveSessionShard(activeExamSession);
+        };
+
+        async function recordExamViolation(reason) {
+            if (!activeExamSession || !currentUser || currentUser.role !== 'student') return;
+            activeExamSession.violations = (Number(activeExamSession.violations) || 0) + 1;
+            activeExamSession.violationLogs = activeExamSession.violationLogs || [];
+            activeExamSession.violationLogs.push({
+                time: new Date().toLocaleTimeString('id-ID'),
+                reason
+            });
+
+            const badge = document.getElementById('examViolationCountBadge');
+            if (badge) {
+                badge.textContent = String(activeExamSession.violations);
+            }
+            await persistLiveSessionShard(activeExamSession);
+        }
+
+        // Kompresi snapshot kamera ke 240x180 JPEG quality 0.4 agar hemat kuota Firestore (<1MB)
+        function captureCompressedCameraSnapshot() {
+            if (!activeExamSession) return;
+            const video = document.getElementById('proctorCameraVideo');
+            if (!video || video.readyState < 2) return;
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = 240;
+                canvas.height = 180;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.4);
+
+                activeExamSession.snapshots = activeExamSession.snapshots || [];
+                if (activeExamSession.snapshots.length >= 10) {
+                    activeExamSession.snapshots.shift();
+                }
+                activeExamSession.snapshots.push({
+                    time: new Date().toLocaleTimeString('id-ID'),
+                    image: compressedDataUrl
+                });
+                persistLiveSessionShard(activeExamSession);
+            } catch (_) {}
+        }
+
+        function stopExamProctoring() {
+            if (examTimerInterval) {
+                clearInterval(examTimerInterval);
+                examTimerInterval = null;
+            }
+            if (snapshotIntervalTimer) {
+                clearInterval(snapshotIntervalTimer);
+                snapshotIntervalTimer = null;
+            }
+            if (fullscreenGuardInterval) {
+                clearInterval(fullscreenGuardInterval);
+                fullscreenGuardInterval = null;
+            }
+            hideFullscreenLockOverlay();
+            if (cameraStream) {
+                try {
+                    cameraStream.getTracks().forEach(t => t.stop());
+                } catch (_) {}
+                cameraStream = null;
+            }
+        }
+
+        function startExamProctoring() {
+            stopExamProctoring();
+            if (!activeExamSession) return;
+
+            initialViewportArea = window.innerWidth * window.innerHeight;
+            lastMonotonicTickMs = performance.now();
+
+            // Pastikan video stream terpasang setelah render ulang DOM
+            setTimeout(() => {
+                const video = document.getElementById('proctorCameraVideo');
+                if (video && cameraStream && video.srcObject !== cameraStream) {
+                    video.srcObject = cameraStream;
+                }
+            }, 100);
+
+            // Penjagaan fullscreen berkala
+            fullscreenGuardInterval = setInterval(() => {
+                if (!activeExamSession || currentUser?.role !== 'student') return;
+                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+                if (!isIOS && !isFullscreenActive()) {
+                    showFullscreenLockOverlay('Tampilan layar penuh tidak aktif. Ketuk tombol di bawah untuk mengembalikan layar penuh dan melanjutkan ujian.');
+                } else {
+                    hideFullscreenLockOverlay();
+                }
+            }, 1200);
+
+            const folder = (appState.folders || []).find(f => f.id === activeExamSession.folderId);
+            const sec = folder?.security || {};
+            if (sec.periodicSnapshots && sec.cameraPolicy !== 'off') {
+                const intervalMs = Math.max(20, Number(sec.snapshotIntervalSec) || 45) * 1000;
+                snapshotIntervalTimer = setInterval(() => {
+                    captureCompressedCameraSnapshot();
+                }, intervalMs);
+            }
+
+            // Monotonic Elapsed Timer berbasis performance.now() (tahan manipulasi jam HP/laptop)
+            let secondsAccumulator = 0;
+            examTimerInterval = setInterval(async () => {
+                if (!activeExamSession) return;
+                const nowMono = performance.now();
+                const deltaSec = (nowMono - lastMonotonicTickMs) / 1000;
+                lastMonotonicTickMs = nowMono;
+
+                // Batasi lonjakan delta wajar jika thread sempat tertunda
+                secondsAccumulator += Math.min(Math.max(deltaSec, 0), 5);
+                if (secondsAccumulator >= 1) {
+                    const wholeSec = Math.floor(secondsAccumulator);
+                    secondsAccumulator -= wholeSec;
+                    activeExamSession.remainingSeconds = Math.max(0, Number(activeExamSession.remainingSeconds) - wholeSec);
+                }
+
+                const timerEl = document.getElementById('examTimerDisplay');
+                if (timerEl) {
+                    timerEl.textContent = formatSeconds(activeExamSession.remainingSeconds);
+                }
+
+                // Sinkronisasi berkala setiap 15 detik sisa waktu
+                if (Math.floor(activeExamSession.remainingSeconds) % 15 === 0) {
+                    persistLiveSessionShard(activeExamSession);
+                }
+
+                if (activeExamSession.remainingSeconds <= 0) {
+                    const sessToSubmit = activeExamSession;
+                    stopExamProctoring();
+                    await exitExamFullscreen();
+                    await finalizeExamSubmission(sessToSubmit, 'Waktu Habis (Otomatis)');
+                    renderApp();
+                    showModalMessage('Waktu Ujian Habis', 'Waktu pengerjaan telah berakhir dan jawaban Anda otomatis dikumpulkan.', 'info');
+                }
+            }, 500);
+        }
+
+        async function finalizeExamSubmission(sess, submitReason = 'Dikumpulkan Peserta') {
+            const folder = (appState.folders || []).find(f => f.id === sess.folderId);
+            const questions = folder ? (folder.questions || []) : [];
+            let autoScore = 0;
+            let hasEssay = false;
+
+            questions.forEach(q => {
+                const pts = Number(q.points) || 0;
+                const ans = sess.answers ? sess.answers[q.id] : undefined;
+                if (q.type === 'pg') {
+                    if (ans !== undefined && Number(ans) === Number(q.correctOption)) {
+                        autoScore += pts;
+                    }
+                } else if (q.type === 'pg_kompleks') {
+                    const expected = Array.isArray(q.correctOptions) ? [...q.correctOptions].sort() : [];
+                    const given = Array.isArray(ans) ? [...ans].sort() : [];
+                    if (expected.length > 0 && expected.length === given.length && expected.every((v, i) => v === given[i])) {
+                        autoScore += pts;
+                    }
+                } else if (q.type === 'uraian') {
+                    hasEssay = true;
+                }
+            });
+
+            const submissionObj = {
+                id: `${sess.folderId}_${sess.studentId}`,
+                folderId: sess.folderId,
+                folderTitle: sess.folderTitle,
+                studentId: sess.studentId,
+                studentName: sess.studentName,
+                participantId: sess.participantId,
+                submittedAt: new Date().toISOString(),
+                submitReason,
+                answers: sess.answers || {},
+                autoScore,
+                essayScore: 0,
+                totalScore: autoScore,
+                hasEssay,
+                essayGraded: !hasEssay,
+                violations: Number(sess.violations) || 0,
+                violationLogs: sess.violationLogs || [],
+                snapshots: sess.snapshots || []
+            };
+
+            activeExamSession = null;
+            await persistSubmissionShard(submissionObj);
+        }
+
+        window.submitActiveExam = async function(reason = 'Dikumpulkan Peserta') {
+            if (!activeExamSession) return;
+            const currentSess = activeExamSession;
+            stopExamProctoring();
+            await exitExamFullscreen();
+            await finalizeExamSubmission(currentSess, reason);
+            renderApp();
+            showModalMessage('Ujian Selesai', 'Jawaban Anda berhasil dikirim dan tersimpan pada dokumen hasil ujian.', 'success');
+        };
+
+        // ==================== 7. TAMPILAN LOGIN & INISIALISASI ADMIN ====================
+        function renderLoginView() {
+            const adminExists = hasRegisteredAdmin();
+
+            return `
+                <div class="min-h-screen flex flex-col justify-between bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 p-4 sm:p-6">
+                    <div class="max-w-5xl w-full mx-auto space-y-5 my-auto">
+                        <!-- Header Brand -->
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-white">
+                            <div class="flex items-center gap-3">
+                                <div class="w-11 h-11 rounded-2xl bg-blue-600 flex items-center justify-center text-xl shadow-lg">
+                                    <i class="fa-solid fa-shield-halved"></i>
+                                </div>
+                                <div>
+                                    <h1 class="text-xl sm:text-2xl font-extrabold tracking-tight">New Base Test</h1>
+                                    <p class="text-xs text-slate-300">Sistem Ujian CBT Berkeamanan Tinggi &amp; Sinkronisasi Cloud Terpecah</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Panel Status & Konfigurasi Firebase Cloud -->
+                        ${renderFirebaseCloudPanel()}
+
+                        <!-- Card Login / Aktivasi -->
+                        <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden grid grid-cols-1 lg:grid-cols-12">
+                            <!-- Kolom Informasi Keamanan -->
+                            <div class="lg:col-span-5 bg-slate-900 text-white p-6 sm:p-8 flex flex-col justify-between space-y-6">
+                                <div class="space-y-4">
+                                    <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 text-blue-300 text-xs font-bold">
+                                        <i class="fa-solid fa-lock"></i> Arsitektur Anti-Kecurangan
+                                    </span>
+                                    <h2 class="text-xl font-extrabold leading-snug">
+                                        Standar Pengawasan Ketat di HP &amp; Laptop
+                                    </h2>
+                                    <ul class="space-y-2.5 text-xs text-slate-300">
+                                        <li class="flex items-start gap-2.5">
+                                            <i class="fa-solid fa-expand text-blue-400 mt-0.5"></i>
+                                            <span><strong>Overlay Layar Penuh Wajib:</strong> Menutup layar soal seketika jika keluar dari mode fullscreen.</span>
+                                        </li>
+                                        <li class="flex items-start gap-2.5">
+                                            <i class="fa-solid fa-stopwatch text-blue-400 mt-0.5"></i>
+                                            <span><strong>Monotonic Timer:</strong> Durasi ujian kebal terhadap perubahan jam manual di HP/laptop siswa.</span>
+                                        </li>
+                                        <li class="flex items-start gap-2.5">
+                                            <i class="fa-solid fa-database text-blue-400 mt-0.5"></i>
+                                            <span><strong>Dokumen Cloud Terpecah:</strong> Tiap peserta memiliki dokumen hasil tersendiri agar tidak bentrok saat kumpul massal.</span>
+                                        </li>
+                                    </ul>
+                                </div>
+                                <div class="text-[11px] text-slate-400 border-t border-slate-800 pt-4">
+                                    ${adminExists
+                                        ? 'Pendaftaran Administrator publik telah terkunci. Hubungi Admin jika membutuhkan akun baru.'
+                                        : 'Status Sistem: Belum ada Administrator terdaftar. Daftarkan Admin pertama pada tab Administrator.'}
+                                </div>
+                            </div>
+
+                            <!-- Kolom Form Masuk -->
+                            <div class="lg:col-span-7 p-6 sm:p-8">
+                                <!-- Switch Role -->
+                                <div class="grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-slate-100 mb-6">
+                                    <button type="button" onclick="setLoginRole('student')"
+                                        class="py-2.5 rounded-xl text-xs font-extrabold transition ${loginRole === 'student' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'}">
+                                        <i class="fa-solid fa-user-graduate mr-1.5"></i>Peserta Ujian
+                                    </button>
+                                    <button type="button" onclick="setLoginRole('admin')"
+                                        class="py-2.5 rounded-xl text-xs font-extrabold transition ${loginRole === 'admin' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'}">
+                                        <i class="fa-solid fa-user-shield mr-1.5"></i>Administrator
+                                    </button>
+                                </div>
+
+                                ${loginRole === 'student' ? `
+                                    <form onsubmit="handleLogin(event)" class="space-y-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1.5">Jalur Peserta</label>
+                                            <div class="grid grid-cols-2 gap-2">
+                                                <button type="button" onclick="setLoginCategory('instansi')"
+                                                    class="py-2.5 px-3 rounded-xl border text-xs font-bold ${loginCategory === 'instansi' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600'}">
+                                                    <i class="fa-solid fa-school mr-1.5"></i>Instansi Sekolah
+                                                </button>
+                                                <button type="button" onclick="setLoginCategory('mandiri')"
+                                                    class="py-2.5 px-3 rounded-xl border text-xs font-bold ${loginCategory === 'mandiri' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600'}">
+                                                    <i class="fa-solid fa-user mr-1.5"></i>Mandiri
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Username Peserta</label>
+                                            <input id="loginUsername" type="text" required placeholder="Masukkan username dari Admin"
+                                                class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Password</label>
+                                            <input id="loginPassword" type="password" required placeholder="Masukkan password"
+                                                class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                        </div>
+                                        <button type="submit"
+                                            class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-extrabold shadow-md transition">
+                                            Masuk ke Ruang Peserta
+                                        </button>
+                                    </form>
+                                ` : (!adminExists ? `
+                                    <form onsubmit="handleInitialAdminRegistration(event)" class="space-y-3.5">
+                                        <div class="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-950">
+                                            <strong>Inisialisasi Administrator Pertama:</strong> Daftarkan akun Administrator pertama. Setelah terdaftar, formulir ini otomatis terkunci dari halaman login publik.
+                                        </div>
+                                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Nama Lengkap Admin</label>
+                                                <input id="initAdminName" type="text" required placeholder="Nama pengelola"
+                                                    class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Instansi / Sekolah</label>
+                                                <input id="initAdminInst" type="text" required placeholder="Nama instansi"
+                                                    class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                            </div>
+                                        </div>
+                                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Username Admin</label>
+                                                <input id="initAdminUser" type="text" required placeholder="Username login"
+                                                    class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Kode Akses / PIN Admin</label>
+                                                <input id="initAdminPin" type="text" required placeholder="PIN keamanan"
+                                                    class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Password Administrator</label>
+                                            <input id="initAdminPass" type="password" required placeholder="Minimal 4 karakter"
+                                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                        </div>
+                                        <button type="submit"
+                                            class="w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold shadow-md transition">
+                                            Aktifkan Administrator &amp; Kunci Pendaftaran
+                                        </button>
+                                    </form>
+                                ` : `
+                                    <form onsubmit="handleLogin(event)" class="space-y-4">
+                                        <div class="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 text-[11px] text-slate-600 flex items-center gap-2">
+                                            <i class="fa-solid fa-lock text-slate-500"></i>
+                                            <span>Registrasi publik terkunci. Masuk dengan kredensial Administrator terdaftar.</span>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Username Administrator</label>
+                                            <input id="loginUsername" type="text" required placeholder="Masukkan username admin"
+                                                class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Password</label>
+                                            <input id="loginPassword" type="password" required placeholder="Masukkan password"
+                                                class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Kode Akses / PIN Admin</label>
+                                            <input id="loginAdminPin" type="password" required placeholder="Masukkan PIN keamanan admin"
+                                                class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+                                        </div>
+                                        <button type="submit"
+                                            class="w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-extrabold shadow-md transition">
+                                            Masuk sebagai Administrator
+                                        </button>
+                                    </form>
+                                `)}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ==================== 8. RUANG UJIAN AKTIF SISWA ====================
+        function renderExamRoomView() {
+            const folder = (appState.folders || []).find(f => f.id === activeExamSession.folderId);
+            if (!folder) {
+                activeExamSession = null;
+                return renderStudentDashboardView();
+            }
+
+            const qIds = activeExamSession.questionOrder || [];
+            const currentIdx = Math.min(Math.max(0, activeExamSession.currentIndex || 0), Math.max(0, qIds.length - 1));
+            const currentQId = qIds[currentIdx];
+            const question = (folder.questions || []).find(q => q.id === currentQId);
+            const sec = folder.security || {};
+            const watermarkText = `${currentUser.fullName} • ${currentUser.participantId || currentUser.username} • ${folder.title}`;
+
+            const dispOrder = (activeExamSession.optionOrders && activeExamSession.optionOrders[currentQId])
+                ? activeExamSession.optionOrders[currentQId]
+                : (question?.options || []).map((_, i) => i);
+
+            const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
+
+            return `
+                <div class="min-h-screen bg-slate-100 flex flex-col relative ${sec.watermarkEnabled ? 'anti-photo-watermark' : ''}">
+                    ${sec.watermarkEnabled ? `
+                        <div class="fixed inset-0 pointer-events-none z-20 flex flex-wrap items-center justify-around opacity-[0.06] overflow-hidden p-6">
+                            ${Array.from({ length: 8 }).map(() => `<div class="text-sm font-black text-slate-900 -rotate-12 whitespace-nowrap m-6">${escapeHtml(watermarkText)}</div>`).join('')}
+                        </div>
+                    ` : ''}
+
+                    <!-- Top Bar Ruang Ujian -->
+                    <header class="bg-slate-900 text-white px-4 py-3 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-30 shadow-md">
+                        <div class="flex items-center gap-3">
+                            <span class="w-2.5 h-2.5 rounded-full bg-rose-500 pulse-rec"></span>
+                            <div>
+                                <div class="text-xs sm:text-sm font-extrabold">${escapeHtml(folder.title)}</div>
+                                <div class="text-[11px] text-slate-300">${escapeHtml(currentUser.fullName)} (${escapeHtml(currentUser.participantId || currentUser.username)})</div>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-2 sm:gap-3">
+                            <button type="button" onclick="reenterExamFullscreenNow()"
+                                class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-blue-300 border border-slate-700">
+                                <i class="fa-solid fa-expand mr-1"></i>Layar Penuh
+                            </button>
+                            <div class="px-3 py-1.5 rounded-xl bg-rose-500/20 border border-rose-400/30 text-xs font-bold text-rose-200">
+                                Pelanggaran: <span id="examViolationCountBadge">${activeExamSession.violations || 0}</span>
+                            </div>
+                            <div class="px-3 py-1.5 rounded-xl bg-blue-600 text-xs sm:text-sm font-extrabold font-mono" id="examTimerDisplay">
+                                ${formatSeconds(activeExamSession.remainingSeconds)}
+                            </div>
+                        </div>
+                    </header>
+
+                    <!-- Konten Utama Soal & Kamera -->
+                    <main class="max-w-6xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-5 flex-1 z-10">
+                        <!-- Kolom Soal -->
+                        <div class="lg:col-span-8 bg-white rounded-2xl shadow-xs border border-slate-200 p-5 sm:p-6 flex flex-col justify-between space-y-6">
+                            ${question ? `
+                                <div class="space-y-4">
+                                    <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                                        <span class="px-3 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs font-extrabold">
+                                            Soal ${currentIdx + 1} dari ${qIds.length}
+                                        </span>
+                                        <span class="text-xs font-semibold text-slate-500">
+                                            ${question.type === 'pg' ? 'Pilihan Ganda' : question.type === 'pg_kompleks' ? 'Pilihan Ganda Kompleks' : 'Uraian'} • ${question.points} Poin
+                                        </span>
+                                    </div>
+
+                                    <div class="text-sm sm:text-base font-semibold text-slate-900 leading-relaxed whitespace-pre-line">
+                                        ${escapeHtml(question.text)}
+                                    </div>
+
+                                    <div class="space-y-2.5 pt-2">
+                                        ${question.type === 'pg' ? dispOrder.map((origIdx, dispPos) => {
+                                            const selected = Number(activeExamSession.answers[question.id]) === origIdx;
+                                            return `
+                                                <button type="button" onclick="setSingleChoiceAnswer('${escapeHtml(question.id)}', ${origIdx})"
+                                                    class="w-full text-left p-3.5 rounded-xl border transition flex items-start gap-3 ${selected ? 'border-blue-600 bg-blue-50 text-blue-950 font-bold' : 'border-slate-200 hover:border-slate-300 bg-white text-slate-700'}">
+                                                    <span class="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-extrabold shrink-0 ${selected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}">
+                                                        ${letters[dispPos] || (dispPos + 1)}
+                                                    </span>
+                                                    <span class="text-xs sm:text-sm pt-0.5">${escapeHtml(question.options[origIdx] || '')}</span>
+                                                </button>
+                                            `;
+                                        }).join('') : ''}
+
+                                        ${question.type === 'pg_kompleks' ? dispOrder.map((origIdx, dispPos) => {
+                                            const arr = Array.isArray(activeExamSession.answers[question.id]) ? activeExamSession.answers[question.id] : [];
+                                            const checked = arr.includes(origIdx);
+                                            return `
+                                                <button type="button" onclick="toggleComplexChoiceAnswer('${escapeHtml(question.id)}', ${origIdx})"
+                                                    class="w-full text-left p-3.5 rounded-xl border transition flex items-start gap-3 ${checked ? 'border-blue-600 bg-blue-50 text-blue-950 font-bold' : 'border-slate-200 hover:border-slate-300 bg-white text-slate-700'}">
+                                                    <span class="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-extrabold shrink-0 ${checked ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}">
+                                                        <i class="fa-solid ${checked ? 'fa-square-check' : 'fa-square'}"></i>
+                                                    </span>
+                                                    <span class="text-xs sm:text-sm pt-0.5">${escapeHtml(question.options[origIdx] || '')}</span>
+                                                </button>
+                                            `;
+                                        }).join('') : ''}
+
+                                        ${question.type === 'uraian' ? `
+                                            <textarea rows="6" oninput="setEssayAnswer('${escapeHtml(question.id)}', this.value)"
+                                                placeholder="Tuliskan jawaban uraian Anda dengan jelas di sini..."
+                                                class="w-full rounded-xl border border-slate-300 p-3.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">${escapeHtml(activeExamSession.answers[question.id] || '')}</textarea>
+                                        ` : ''}
+                                    </div>
+                                </div>
+
+                                <!-- Navigasi Bawah -->
+                                <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                                    <button type="button" onclick="navigateExamQuestion(${currentIdx - 1})" ${currentIdx === 0 ? 'disabled' : ''}
+                                        class="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 disabled:opacity-40">
+                                        <i class="fa-solid fa-arrow-left mr-1.5"></i>Sebelumnya
+                                    </button>
+                                    ${currentIdx < qIds.length - 1 ? `
+                                        <button type="button" onclick="navigateExamQuestion(${currentIdx + 1})"
+                                            class="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold">
+                                            Selanjutnya<i class="fa-solid fa-arrow-right ml-1.5"></i>
+                                        </button>
+                                    ` : `
+                                        <button type="button" onclick="submitActiveExam('Dikumpulkan Peserta')"
+                                            class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-sm">
+                                            <i class="fa-solid fa-paper-plane mr-1.5"></i>Kumpulkan Ujian
+                                        </button>
+                                    `}
+                                </div>
+                            ` : '<div class="text-sm text-slate-500">Soal tidak ditemukan.</div>'}
+                        </div>
+
+                        <!-- Kolom Kamera & Peta Nomor -->
+                        <div class="lg:col-span-4 space-y-4">
+                            <div class="bg-white rounded-2xl shadow-xs border border-slate-200 p-4 space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-xs font-extrabold text-slate-800">Pengawasan Kamera</span>
+                                    <span class="text-[11px] font-bold ${sec.cameraPolicy === 'off' ? 'text-slate-400' : 'text-rose-600'} flex items-center gap-1.5">
+                                        <span class="w-2 h-2 rounded-full ${sec.cameraPolicy === 'off' ? 'bg-slate-400' : 'bg-rose-600 pulse-rec'}"></span>
+                                        ${sec.cameraPolicy === 'off' ? 'NONAKTIF' : 'LIVE'}
+                                    </span>
+                                </div>
+                                ${sec.cameraPolicy !== 'off' ? `
+                                    <div class="aspect-video rounded-xl bg-slate-900 overflow-hidden relative flex items-center justify-center">
+                                        <video id="proctorCameraVideo" autoplay muted playsinline class="w-full h-full object-cover mirror-video ${cameraBlockedFlag ? 'hidden' : ''}"></video>
+                                        ${cameraBlockedFlag ? `
+                                            <div class="p-3 text-center text-[11px] text-amber-200 space-y-1">
+                                                <i class="fa-solid fa-video-slash text-base"></i>
+                                                <div>${escapeHtml(cameraStatusNote)}</div>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                ` : `
+                                    <div class="rounded-xl bg-slate-50 border border-slate-200 p-3 text-[11px] text-slate-500">
+                                        Kamera dinonaktifkan untuk folder ujian ini.
+                                    </div>
+                                `}
+                                <div class="text-[11px] text-slate-500">
+                                    Sinkronisasi Cloud: <strong data-sync-badge>${escapeHtml(cloudSyncStatus)}</strong>
+                                </div>
+                            </div>
+
+                            <div class="bg-white rounded-2xl shadow-xs border border-slate-200 p-4 space-y-3">
+                                <div class="text-xs font-extrabold text-slate-800">Navigasi Nomor Soal</div>
+                                <div class="grid grid-cols-5 gap-2">
+                                    ${qIds.map((id, idx) => {
+                                        const ans = activeExamSession.answers[id];
+                                        const answered = Array.isArray(ans) ? ans.length > 0 : (ans !== undefined && String(ans).trim() !== '');
+                                        const isCurrent = idx === currentIdx;
+                                        return `
+                                            <button type="button" onclick="navigateExamQuestion(${idx})"
+                                                class="py-2 rounded-xl text-xs font-extrabold border transition ${isCurrent ? 'border-blue-600 bg-blue-600 text-white' : answered ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-slate-50 text-slate-700'}">
+                                                ${idx + 1}
+                                            </button>
+                                        `;
+                                    }).join('')}
+                                </div>
+                                <button type="button" onclick="submitActiveExam('Dikumpulkan Peserta')"
+                                    class="w-full mt-2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold">
+                                    Selesai &amp; Kumpulkan Jawaban
+                                </button>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        // ==================== 9. DASHBOARD PESERTA ====================
+        window.setActiveMenu = function(menu) {
+            activeMenu = menu;
+            renderApp();
+        };
+
+        function renderStudentDashboardView() {
+            const folders = appState.folders || [];
+            const mySubmissions = getAllSubmissionsList().filter(s => s.studentId === currentUser.id);
+
+            return `
+                <div class="min-h-screen bg-slate-100">
+                    <nav class="bg-white border-b border-slate-200 px-4 sm:px-6 py-3.5 sticky top-0 z-30">
+                        <div class="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
+                            <div class="flex items-center gap-3">
+                                <div class="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold">
+                                    <i class="fa-solid fa-shield-halved"></i>
+                                </div>
+                                <div>
+                                    <div class="text-sm font-extrabold text-slate-900">New Base Test</div>
+                                    <div class="text-[11px] text-slate-500">${escapeHtml(currentUser.fullName)} &bull; ${escapeHtml(currentUser.institution || 'Peserta')}</div>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button type="button" onclick="setActiveMenu('ujian')"
+                                    class="px-3.5 py-2 rounded-xl text-xs font-bold ${activeMenu === 'ujian' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}">
+                                    Folder Ujian
+                                </button>
+                                <button type="button" onclick="setActiveMenu('nilai')"
+                                    class="px-3.5 py-2 rounded-xl text-xs font-bold ${activeMenu === 'nilai' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}">
+                                    Riwayat Nilai
+                                </button>
+                                <button type="button" onclick="handleLogout(false)"
+                                    class="px-3.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold">
+                                    Keluar
+                                </button>
+                            </div>
+                        </div>
+                    </nav>
+
+                    <main class="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
+                        ${activeMenu === 'ujian' ? `
+                            <div class="space-y-4">
+                                <div>
+                                    <h2 class="text-lg font-extrabold text-slate-900">Daftar Folder Ujian Tersedia</h2>
+                                    <p class="text-xs text-slate-500">Pilih folder ujian untuk mulai mengerjakan. Mode layar penuh akan aktif otomatis saat ujian dimulai.</p>
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    ${folders.map(folder => {
+                                        const sched = getFolderScheduleStatus(folder);
+                                        const sub = mySubmissions.find(s => s.folderId === folder.id);
+                                        const camPolicyLabel = folder.security?.cameraPolicy === 'required'
+                                            ? 'Wajib Aktif'
+                                            : folder.security?.cameraPolicy === 'off'
+                                                ? 'Nonaktif'
+                                                : 'Opsional';
+                                        return `
+                                            <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col justify-between space-y-4">
+                                                <div class="space-y-2">
+                                                    <div class="flex items-center justify-between gap-2">
+                                                        <span class="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 text-[11px] font-bold">
+                                                            ${escapeHtml(folder.subject)}
+                                                        </span>
+                                                        <span class="px-2.5 py-1 rounded-lg text-[11px] font-bold ${sched.canEnter ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}">
+                                                            ${escapeHtml(sched.label)}
+                                                        </span>
+                                                    </div>
+                                                    <h3 class="text-base font-extrabold text-slate-900">${escapeHtml(folder.title)}</h3>
+                                                    <p class="text-xs text-slate-600">${escapeHtml(folder.description || 'Ujian berbasis pengawasan ketat.')}</p>
+                                                    <div class="grid grid-cols-2 gap-2 pt-2 text-[11px] text-slate-600">
+                                                        <div><i class="fa-regular fa-clock mr-1 text-blue-600"></i>Durasi: <strong>${folder.durationMinutes} Menit</strong></div>
+                                                        <div><i class="fa-solid fa-list-ol mr-1 text-blue-600"></i>Jumlah: <strong>${(folder.questions || []).length} Soal</strong></div>
+                                                        <div><i class="fa-solid fa-key mr-1 text-blue-600"></i>Token: <strong>${folder.tokenEnabled ? 'Wajib Token' : 'Tanpa Token'}</strong></div>
+                                                        <div><i class="fa-solid fa-camera mr-1 text-blue-600"></i>Kamera: <strong>${camPolicyLabel}</strong></div>
+                                                    </div>
+                                                </div>
+                                                <div class="pt-3 border-t border-slate-100">
+                                                    ${sub ? `
+                                                        <div class="w-full py-2.5 px-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold text-center">
+                                                            <i class="fa-solid fa-circle-check mr-1.5"></i>Sudah Dikerjakan (Skor: ${sub.totalScore})
+                                                        </div>
+                                                    ` : `
+                                                        <button type="button" onclick="promptStartFolderExam('${escapeHtml(folder.id)}')" ${!sched.canEnter ? 'disabled' : ''}
+                                                            class="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-extrabold shadow-xs transition">
+                                                            <i class="fa-solid fa-play mr-1.5"></i>Mulai Ujian Sekarang
+                                                        </button>
+                                                    `}
+                                                </div>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                                <h2 class="text-base font-extrabold text-slate-900">Riwayat &amp; Hasil Ujian Saya</h2>
+                                ${mySubmissions.length === 0 ? `
+                                    <p class="text-xs text-slate-500">Belum ada ujian yang dikumpulkan.</p>
+                                ` : `
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-left text-xs">
+                                            <thead class="bg-slate-50 text-slate-600 border-b border-slate-200">
+                                                <tr>
+                                                    <th class="p-3">Folder Ujian</th>
+                                                    <th class="p-3">Waktu Kirim</th>
+                                                    <th class="p-3">Skor Pilihan</th>
+                                                    <th class="p-3">Skor Uraian</th>
+                                                    <th class="p-3">Total Nilai</th>
+                                                    <th class="p-3">Pelanggaran</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100">
+                                                ${mySubmissions.map(s => `
+                                                    <tr>
+                                                        <td class="p-3 font-bold text-slate-900">${escapeHtml(s.folderTitle)}</td>
+                                                        <td class="p-3 text-slate-600">${formatDateTimeDisplay(s.submittedAt)}</td>
+                                                        <td class="p-3">${s.autoScore}</td>
+                                                        <td class="p-3">${s.hasEssay ? (s.essayGraded ? s.essayScore : 'Menunggu Koreksi') : '-'}</td>
+                                                        <td class="p-3 font-extrabold text-blue-700">${s.totalScore}</td>
+                                                        <td class="p-3">${s.violations}x</td>
+                                                    </tr>
+                                                `).join('')}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                `}
+                            </div>
+                        `}
+                    </main>
+                </div>
+            `;
+        }
+
+        // ==================== 10. DASHBOARD ADMINISTRATOR ====================
+        window.selectAdminFolder = function(folderId) {
+            selectedAdminFolderId = folderId;
+            renderApp();
+        };
+
+        window.randomizeEditFolderToken = function() {
+            const input = document.getElementById('editFolderTokenCode');
+            if (!input) return;
+            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+            let code = '';
+            for (let i = 0; i < 6; i++) {
+                code += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            input.value = code;
+        };
+
+        window.openCreateFolderModal = function() {
+            openDynamicModal(`
+                <form onsubmit="createNewExamFolder(event)" class="space-y-4">
+                    <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <h3 class="text-base font-extrabold text-slate-900">Buat Folder Ujian Baru</h3>
+                        <button type="button" onclick="closeDynamicModal()" class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">Nama Folder Ujian</label>
+                            <input id="newFolderTitle" type="text" required placeholder="Contoh: Ujian Matematika Paket B"
+                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">Mata Pelajaran / Kategori</label>
+                            <input id="newFolderSubject" type="text" required placeholder="Contoh: Matematika"
+                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">Deskripsi Singkat</label>
+                        <input id="newFolderDesc" type="text" placeholder="Keterangan ujian untuk peserta"
+                            class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">Durasi (Menit)</label>
+                            <input id="newFolderDuration" type="number" min="1" value="45" required
+                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">Jadwal Mulai (Opsional)</label>
+                            <input id="newFolderStart" type="datetime-local"
+                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">Jadwal Selesai (Opsional)</label>
+                            <input id="newFolderEnd" type="datetime-local"
+                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="rounded-xl bg-slate-50 border border-slate-200 p-3 flex items-center justify-between gap-2">
+                            <label class="inline-flex items-center gap-2 text-xs font-bold text-slate-800 cursor-pointer">
+                                <input id="newFolderTokenEnabled" type="checkbox" class="rounded text-blue-600" />
+                                <span>Aktifkan Token</span>
+                            </label>
+                            <input id="newFolderTokenCode" type="text" value="CBT${Math.floor(1000 + Math.random() * 9000)}"
+                                class="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-mono uppercase w-28" />
+                        </div>
+                        <div class="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                            <label class="block text-[11px] font-bold text-slate-700 mb-1">Kebijakan Kamera Pengawas</label>
+                            <select id="newFolderCameraPolicy" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs">
+                                <option value="optional">Opsional (Disarankan)</option>
+                                <option value="required">Wajib Aktif</option>
+                                <option value="off">Nonaktif</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="flex justify-end gap-2">
+                        <button type="button" onclick="closeDynamicModal()" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-bold">Batal</button>
+                        <button type="submit" class="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold">Simpan Folder</button>
+                    </div>
+                </form>
+            `);
+        };
+
+        window.createNewExamFolder = async function(e) {
+            e.preventDefault();
+            const title = document.getElementById('newFolderTitle')?.value.trim();
+            const subject = document.getElementById('newFolderSubject')?.value.trim();
+            const description = document.getElementById('newFolderDesc')?.value.trim();
+            const durationMinutes = Math.max(1, Number(document.getElementById('newFolderDuration')?.value) || 45);
+            const scheduleStart = document.getElementById('newFolderStart')?.value || '';
+            const scheduleEnd = document.getElementById('newFolderEnd')?.value || '';
+            const tokenEnabled = Boolean(document.getElementById('newFolderTokenEnabled')?.checked);
+            const tokenCode = (document.getElementById('newFolderTokenCode')?.value || 'CBT2026').trim().toUpperCase();
+            const cameraPolicy = document.getElementById('newFolderCameraPolicy')?.value || 'optional';
+
+            if (!title) return;
+            const newFolder = normalizeFolder({
+                id: 'folder-' + Date.now(),
+                title,
+                subject,
+                description,
+                durationMinutes,
+                scheduleStart,
+                scheduleEnd,
+                tokenEnabled,
+                tokenCode,
+                security: {
+                    cameraPolicy
+                },
+                questions: []
+            }, appState.folders.length);
+
+            appState.folders.push(newFolder);
+            selectedAdminFolderId = newFolder.id;
+            closeDynamicModal();
+            await persistMetaState();
+            renderApp();
+        };
+
+        window.saveActiveFolderSettings = async function(e) {
+            e.preventDefault();
+            const folder = getActiveAdminFolder();
+            if (!folder) return;
+
+            folder.title = document.getElementById('editFolderTitle')?.value.trim() || folder.title;
+            folder.subject = document.getElementById('editFolderSubject')?.value.trim() || folder.subject;
+            folder.durationMinutes = Math.max(1, Number(document.getElementById('editFolderDuration')?.value) || 45);
+            folder.scheduleStart = document.getElementById('editFolderStart')?.value || '';
+            folder.scheduleEnd = document.getElementById('editFolderEnd')?.value || '';
+            folder.tokenEnabled = Boolean(document.getElementById('editFolderTokenEnabled')?.checked);
+            folder.tokenCode = (document.getElementById('editFolderTokenCode')?.value || folder.tokenCode).trim().toUpperCase();
+
+            folder.security = {
+                cameraPolicy: document.getElementById('editFolderCameraPolicy')?.value || 'optional',
+                randomizeQuestions: Boolean(document.getElementById('secRandQ')?.checked),
+                randomizeOptions: Boolean(document.getElementById('secRandOpt')?.checked),
+                watermarkEnabled: Boolean(document.getElementById('secWatermark')?.checked),
+                periodicSnapshots: Boolean(document.getElementById('secSnapshot')?.checked),
+                snapshotIntervalSec: folder.security?.snapshotIntervalSec || 45,
+                blockShortcuts: Boolean(document.getElementById('secShortcuts')?.checked),
+                detectSplitScreen: Boolean(document.getElementById('secSplit')?.checked),
+                singleSessionLock: Boolean(document.getElementById('secSingleSess')?.checked)
+            };
+
+            await persistMetaState();
+            renderApp();
+            showModalMessage('Pengaturan Tersimpan', 'Konfigurasi folder, kebijakan kamera, token, dan keamanan ketat berhasil disimpan.', 'success');
+        };
+
+        window.deleteActiveFolder = async function() {
+            const folder = getActiveAdminFolder();
+            if (!folder) return;
+            if ((appState.folders || []).length <= 1) {
+                showModalMessage('Tidak Dapat Dihapus', 'Minimal harus tersedia 1 folder ujian di dalam sistem.', 'warning');
+                return;
+            }
+            appState.folders = appState.folders.filter(f => f.id !== folder.id);
+            selectedAdminFolderId = appState.folders[0].id;
+            await persistMetaState();
+            renderApp();
+        };
+
+        window.openQuestionEditorModal = function(questionId = null) {
+            const folder = getActiveAdminFolder();
+            if (!folder) return;
+            const existing = questionId ? (folder.questions || []).find(q => q.id === questionId) : null;
+            const qType = existing ? existing.type : 'pg';
+            const opts = existing && Array.isArray(existing.options) && existing.options.length > 0
+                ? existing.options
+                : ['', '', '', ''];
+
+            openDynamicModal(`
+                <form onsubmit="saveQuestionToFolder(event, '${existing ? escapeHtml(existing.id) : ''}')" class="space-y-4">
+                    <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <h3 class="text-base font-extrabold text-slate-900">${existing ? 'Edit Soal' : 'Tambah Soal Baru'} (${escapeHtml(folder.title)})</h3>
+                        <button type="button" onclick="closeDynamicModal()" class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">Tipe Soal</label>
+                            <select id="qFormType" onchange="toggleQuestionOptionsVisibility(this.value)" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs">
+                                <option value="pg" ${qType === 'pg' ? 'selected' : ''}>Pilihan Ganda (1 Jawaban)</option>
+                                <option value="pg_kompleks" ${qType === 'pg_kompleks' ? 'selected' : ''}>Pilihan Ganda Kompleks (Banyak Jawaban)</option>
+                                <option value="uraian" ${qType === 'uraian' ? 'selected' : ''}>Uraian / Esai</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-700 mb-1">Bobot Poin</label>
+                            <input id="qFormPoints" type="number" min="1" value="${existing ? existing.points : 20}" required
+                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">Pertanyaan</label>
+                        <textarea id="qFormText" rows="3" required class="w-full rounded-xl border border-slate-300 p-3 text-xs">${existing ? escapeHtml(existing.text) : ''}</textarea>
+                    </div>
+                    <div id="qFormOptionsBox" class="${qType === 'uraian' ? 'hidden' : 'space-y-2'}">
+                        <label class="block text-xs font-bold text-slate-700">Pilihan Jawaban (Centang kunci jawaban yang benar)</label>
+                        ${[0, 1, 2, 3].map(idx => {
+                            const isCorrect = existing
+                                ? (qType === 'pg_kompleks'
+                                    ? (existing.correctOptions || []).includes(idx)
+                                    : Number(existing.correctOption) === idx)
+                                : idx === 0;
+                            return `
+                                <div class="flex items-center gap-2">
+                                    <input type="checkbox" id="qOptCorrect_${idx}" ${isCorrect ? 'checked' : ''} class="rounded text-blue-600" />
+                                    <input type="text" id="qOptText_${idx}" value="${escapeHtml(opts[idx] || '')}" placeholder="Opsi ${String.fromCharCode(65 + idx)}"
+                                        class="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                    <div class="flex justify-end gap-2">
+                        <button type="button" onclick="closeDynamicModal()" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-bold">Batal</button>
+                        <button type="submit" class="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold">Simpan Soal</button>
+                    </div>
+                </form>
+            `);
+        };
+
+        window.toggleQuestionOptionsVisibility = function(val) {
+            const box = document.getElementById('qFormOptionsBox');
+            if (!box) return;
+            if (val === 'uraian') box.classList.add('hidden');
+            else box.classList.remove('hidden');
+        };
+
+        window.saveQuestionToFolder = async function(e, existingId) {
+            e.preventDefault();
+            const folder = getActiveAdminFolder();
+            if (!folder) return;
+
+            const type = document.getElementById('qFormType')?.value || 'pg';
+            const points = Math.max(1, Number(document.getElementById('qFormPoints')?.value) || 20);
+            const text = document.getElementById('qFormText')?.value.trim();
+            if (!text) return;
+
+            let options = [];
+            let correctOption = 0;
+            let correctOptions = [];
+
+            if (type !== 'uraian') {
+                for (let i = 0; i < 4; i++) {
+                    const optVal = document.getElementById('qOptText_' + i)?.value.trim() || '';
+                    if (optVal) {
+                        const newIdx = options.length;
+                        options.push(optVal);
+                        if (document.getElementById('qOptCorrect_' + i)?.checked) {
+                            correctOptions.push(newIdx);
+                        }
+                    }
+                }
+                if (options.length < 2) {
+                    showModalMessage('Opsi Kurang', 'Isi minimal 2 pilihan jawaban untuk soal pilihan ganda.', 'warning');
+                    return;
+                }
+                if (correctOptions.length === 0) correctOptions = [0];
+                correctOption = correctOptions[0];
+            }
+
+            const qObj = {
+                id: existingId || ('q-' + Date.now()),
+                type,
+                text,
+                options,
+                correctOption,
+                correctOptions,
+                points
+            };
+
+            folder.questions = folder.questions || [];
+            if (existingId) {
+                const idx = folder.questions.findIndex(q => q.id === existingId);
+                if (idx !== -1) folder.questions[idx] = qObj;
+            } else {
+                folder.questions.push(qObj);
+            }
+
+            closeDynamicModal();
+            await persistMetaState();
+            renderApp();
+        };
+
+        window.deleteQuestionFromFolder = async function(qId) {
+            const folder = getActiveAdminFolder();
+            if (!folder) return;
+            folder.questions = (folder.questions || []).filter(q => q.id !== qId);
+            await persistMetaState();
+            renderApp();
+        };
+
+        window.forceSubmitStudentSession = async function(shardKey) {
+            const sess = (appState.liveSessionsMap || {})[shardKey];
+            if (!sess) return;
+            sess.forceSubmittedByAdmin = true;
+            await persistLiveSessionShard(sess);
+            await finalizeExamSubmission(sess, 'Dikunci & Dikumpulkan Paksa oleh Admin');
+            renderApp();
+            showModalMessage('Ujian Dikunci', 'Sesi ujian peserta telah dikunci dan dikumpulkan paksa.', 'info');
+        };
+
+        window.gradeEssaySubmission = async function(shardKey, newEssayScore) {
+            const sub = (appState.submissionsMap || {})[shardKey];
+            if (!sub) return;
+            sub.essayScore = Math.max(0, Number(newEssayScore) || 0);
+            sub.totalScore = (Number(sub.autoScore) || 0) + sub.essayScore;
+            sub.essayGraded = true;
+            await persistSubmissionShard(sub);
+            renderApp();
+        };
+
+        window.exportSubmissionsCSV = function() {
+            const list = getAllSubmissionsList();
+            if (list.length === 0) {
+                showModalMessage('Belum Ada Data', 'Belum ada hasil ujian untuk diekspor.', 'warning');
+                return;
+            }
+            const headers = ['ID Peserta', 'Nama Peserta', 'Folder Ujian', 'Waktu Kirim', 'Skor Pilihan', 'Skor Uraian', 'Total Skor', 'Pelanggaran', 'Keterangan'];
+            const rows = list.map(s => [
+                `"${(s.participantId || '').replace(/"/g, '""')}"`,
+                `"${(s.studentName || '').replace(/"/g, '""')}"`,
+                `"${(s.folderTitle || '').replace(/"/g, '""')}"`,
+                `"${formatDateTimeDisplay(s.submittedAt)}"`,
+                s.autoScore || 0,
+                s.essayScore || 0,
+                s.totalScore || 0,
+                s.violations || 0,
+                `"${(s.submitReason || '').replace(/"/g, '""')}"`
+            ].join(','));
+
+            const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'Laporan_Nilai_NewBaseTest.csv';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        };
+
+        window.createNewUserAccount = async function(e) {
+            e.preventDefault();
+            const role = document.getElementById('newUserRole')?.value || 'student';
+            const fullName = document.getElementById('newUserName')?.value.trim();
+            const username = document.getElementById('newUserUsername')?.value.trim();
+            const password = document.getElementById('newUserPassword')?.value.trim();
+            const institution = document.getElementById('newUserInst')?.value.trim();
+            const category = document.getElementById('newUserCategory')?.value || 'instansi';
+            const pin = document.getElementById('newUserPin')?.value.trim() || '';
+
+            if (!fullName || !username || !password) return;
+            if (appState.users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
+                showModalMessage('Username Terpakai', 'Gunakan username lain yang belum terdaftar.', 'warning');
+                return;
+            }
+
+            appState.users.push({
+                id: (role === 'admin' ? 'adm-' : 'stu-') + Date.now(),
+                role,
+                fullName,
+                username,
+                password,
+                institution: institution || (role === 'admin' ? 'Administrator' : 'Peserta'),
+                category: role === 'admin' ? 'admin' : category,
+                participantId: (role === 'admin' ? 'ADM-' : 'PST-') + String(appState.users.length + 1).padStart(3, '0'),
+                accessPin: role === 'admin' ? (pin || '1234') : ''
+            });
+
+            await persistMetaState();
+            renderApp();
+            showModalMessage('Akun Dibuat', 'Akun baru berhasil ditambahkan dan tersinkronisasi.', 'success');
+        };
+
+        window.deleteUserAccount = async function(userId) {
+            const target = appState.users.find(u => u.id === userId);
+            if (!target) return;
+            if (target.role === 'admin' && getAdminUsers().length <= 1) {
+                showModalMessage('Ditolak', 'Minimal harus tersisa 1 akun Administrator aktif.', 'warning');
+                return;
+            }
+            appState.users = appState.users.filter(u => u.id !== userId);
+            await persistMetaState();
+            renderApp();
+        };
+
+        function renderAdminDashboardView() {
+            const folders = appState.folders || [];
+            const activeFolder = getActiveAdminFolder();
+            const sec = activeFolder?.security || {};
+            const liveSessions = getAllLiveSessionsList();
+            const submissions = getAllSubmissionsList();
+
+            const filteredUsers = (appState.users || []).filter(u => {
+                const matchQuery = !participantSearchQuery ||
+                    (u.fullName || '').toLowerCase().includes(participantSearchQuery.toLowerCase()) ||
+                    (u.username || '').toLowerCase().includes(participantSearchQuery.toLowerCase());
+                const matchTrack = participantTrackFilter === 'all' ||
+                    (participantTrackFilter === 'admin' && u.role === 'admin') ||
+                    (u.role === 'student' && (u.category || 'instansi') === participantTrackFilter);
+                return matchQuery && matchTrack;
+            });
+
+            return `
+                <div class="min-h-screen bg-slate-100">
+                    <!-- Top Nav Admin -->
+                    <nav class="bg-slate-900 text-white px-4 sm:px-6 py-3.5 sticky top-0 z-30 shadow-md">
+                        <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+                            <div class="flex items-center gap-3">
+                                <div class="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center font-bold">
+                                    <i class="fa-solid fa-shield-halved"></i>
+                                </div>
+                                <div>
+                                    <div class="text-sm font-extrabold">New Base Test — Administrator</div>
+                                    <div class="text-[11px] text-slate-300">${escapeHtml(currentUser.fullName)} (${escapeHtml(currentUser.institution || 'Admin')})</div>
+                                </div>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <button type="button" onclick="setActiveMenu('ujian')"
+                                    class="px-3 py-2 rounded-xl text-xs font-bold ${activeMenu === 'ujian' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300'}">
+                                    Ujian &amp; Folder
+                                </button>
+                                <button type="button" onclick="setActiveMenu('monitor')"
+                                    class="px-3 py-2 rounded-xl text-xs font-bold ${activeMenu === 'monitor' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300'}">
+                                    Live Monitor (${liveSessions.length})
+                                </button>
+                                <button type="button" onclick="setActiveMenu('nilai')"
+                                    class="px-3 py-2 rounded-xl text-xs font-bold ${activeMenu === 'nilai' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300'}">
+                                    Nilai (${submissions.length})
+                                </button>
+                                <button type="button" onclick="setActiveMenu('profil')"
+                                    class="px-3 py-2 rounded-xl text-xs font-bold ${activeMenu === 'profil' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300'}">
+                                    Profil &amp; Cloud
+                                </button>
+                                <button type="button" onclick="handleLogout(false)"
+                                    class="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold">
+                                    Keluar
+                                </button>
+                            </div>
+                        </div>
+                    </nav>
+
+                    <main class="max-w-7xl mx-auto p-4 sm:p-6 space-y-5">
+                        ${activeMenu === 'ujian' ? `
+                            <!-- Pemilih Folder Ujian -->
+                            <div class="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
+                                <div class="flex flex-wrap items-center justify-between gap-3">
+                                    <div>
+                                        <h2 class="text-base font-extrabold text-slate-900">Manajemen Folder Ujian</h2>
+                                        <p class="text-xs text-slate-500">Pilih folder ujian untuk mengatur jadwal, kebijakan kamera, token, keamanan ketat, dan butir soal.</p>
+                                    </div>
+                                    <button type="button" onclick="openCreateFolderModal()"
+                                        class="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold">
+                                        <i class="fa-solid fa-folder-plus mr-1.5"></i>Buat Folder Ujian
+                                    </button>
+                                </div>
+                                <div class="flex flex-wrap gap-2">
+                                    ${folders.map(f => `
+                                        <button type="button" onclick="selectAdminFolder('${escapeHtml(f.id)}')"
+                                            class="px-3.5 py-2 rounded-xl border text-xs font-bold transition flex items-center gap-2 ${f.id === activeFolder?.id ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-200 bg-slate-50 text-slate-700'}">
+                                            <i class="fa-solid fa-folder${f.id === activeFolder?.id ? '-open text-blue-600' : ''}"></i>
+                                            <span>${escapeHtml(f.title)}</span>
+                                            <span class="px-1.5 py-0.5 rounded bg-white text-[10px] border border-slate-200">${(f.questions || []).length} soal</span>
+                                        </button>
+                                    `).join('')}
+                                </div>
+                            </div>
+
+                            ${activeFolder ? `
+                                <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                                    <!-- Pengaturan Folder, Kamera, Token & Keamanan -->
+                                    <form onsubmit="saveActiveFolderSettings(event)" class="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                                        <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                                            <h3 class="text-sm font-extrabold text-slate-900">Pengaturan Folder &amp; Keamanan</h3>
+                                            <button type="button" onclick="deleteActiveFolder()" class="text-xs font-bold text-rose-600 hover:underline">Hapus Folder</button>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Nama Folder</label>
+                                            <input id="editFolderTitle" type="text" value="${escapeHtml(activeFolder.title)}" required
+                                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Mata Pelajaran</label>
+                                                <input id="editFolderSubject" type="text" value="${escapeHtml(activeFolder.subject)}"
+                                                    class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Durasi (Menit)</label>
+                                                <input id="editFolderDuration" type="number" min="1" value="${activeFolder.durationMinutes}"
+                                                    class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                            </div>
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Jadwal Mulai</label>
+                                                <input id="editFolderStart" type="datetime-local" value="${escapeHtml(activeFolder.scheduleStart || '')}"
+                                                    class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Jadwal Selesai</label>
+                                                <input id="editFolderEnd" type="datetime-local" value="${escapeHtml(activeFolder.scheduleEnd || '')}"
+                                                    class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                            </div>
+                                        </div>
+
+                                        <!-- Kebijakan Kamera Pengawas -->
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Kebijakan Kamera Pengawas</label>
+                                            <select id="editFolderCameraPolicy" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs">
+                                                <option value="optional" ${sec.cameraPolicy === 'optional' ? 'selected' : ''}>Opsional (Ujian tetap berjalan jika kamera ditolak)</option>
+                                                <option value="required" ${sec.cameraPolicy === 'required' ? 'selected' : ''}>Wajib Aktif (Siswa harus mengizinkan kamera)</option>
+                                                <option value="off" ${sec.cameraPolicy === 'off' ? 'selected' : ''}>Nonaktif (Tanpa kamera)</option>
+                                            </select>
+                                        </div>
+
+                                        <!-- Token Ujian Fleksibel -->
+                                        <div class="rounded-xl bg-blue-50/70 border border-blue-200 p-3 space-y-2">
+                                            <div class="flex items-center justify-between gap-2">
+                                                <label class="inline-flex items-center gap-2 text-xs font-extrabold text-blue-950 cursor-pointer">
+                                                    <input id="editFolderTokenEnabled" type="checkbox" ${activeFolder.tokenEnabled ? 'checked' : ''} class="rounded text-blue-600" />
+                                                    <span>Aktifkan Token</span>
+                                                </label>
+                                                <div class="flex items-center gap-1.5">
+                                                    <input id="editFolderTokenCode" type="text" value="${escapeHtml(activeFolder.tokenCode || 'CBT2026')}"
+                                                        class="w-24 rounded-lg border border-blue-300 bg-white px-2 py-1 text-xs font-mono uppercase text-center" />
+                                                    <button type="button" onclick="randomizeEditFolderToken()" title="Acak Token 6 Digit"
+                                                        class="px-2 py-1 rounded-lg bg-blue-600 text-white text-[11px] font-bold">
+                                                        <i class="fa-solid fa-shuffle"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <p class="text-[11px] text-blue-800">Jika dicentang, peserta wajib memasukkan token sebelum masuk ujian.</p>
+                                        </div>
+
+                                        <!-- Keamanan Ketat -->
+                                        <div class="space-y-2 pt-1">
+                                            <div class="text-xs font-extrabold text-slate-800">Opsi Keamanan &amp; Pengawasan</div>
+                                            <label class="flex items-center gap-2 text-xs text-slate-700"><input id="secRandQ" type="checkbox" ${sec.randomizeQuestions ? 'checked' : ''} /> Acak urutan nomor soal</label>
+                                            <label class="flex items-center gap-2 text-xs text-slate-700"><input id="secRandOpt" type="checkbox" ${sec.randomizeOptions ? 'checked' : ''} /> Acak opsi jawaban A/B/C/D</label>
+                                            <label class="flex items-center gap-2 text-xs text-slate-700"><input id="secWatermark" type="checkbox" ${sec.watermarkEnabled ? 'checked' : ''} /> Watermark identitas anti-foto layar</label>
+                                            <label class="flex items-center gap-2 text-xs text-slate-700"><input id="secSnapshot" type="checkbox" ${sec.periodicSnapshots ? 'checked' : ''} /> Snapshot kamera terkompres berkala (240x180)</label>
+                                            <label class="flex items-center gap-2 text-xs text-slate-700"><input id="secShortcuts" type="checkbox" ${sec.blockShortcuts ? 'checked' : ''} /> Blokir shortcut DevTools / PrintScreen / Copy</label>
+                                            <label class="flex items-center gap-2 text-xs text-slate-700"><input id="secSplit" type="checkbox" ${sec.detectSplitScreen ? 'checked' : ''} /> Deteksi split-screen / penyusutan layar</label>
+                                            <label class="flex items-center gap-2 text-xs text-slate-700"><input id="secSingleSess" type="checkbox" ${sec.singleSessionLock ? 'checked' : ''} /> Kunci sesi tunggal (anti-login ganda)</label>
+                                        </div>
+
+                                        <button type="submit" class="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold">
+                                            Simpan Pengaturan Folder
+                                        </button>
+                                    </form>
+
+                                    <!-- Daftar Soal Dalam Folder -->
+                                    <div class="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                                        <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                                            <div>
+                                                <h3 class="text-sm font-extrabold text-slate-900">Daftar Soal (${(activeFolder.questions || []).length})</h3>
+                                                <p class="text-[11px] text-slate-500">Kelola butir soal untuk folder ${escapeHtml(activeFolder.title)}.</p>
+                                            </div>
+                                            <button type="button" onclick="openQuestionEditorModal()"
+                                                class="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold">
+                                                <i class="fa-solid fa-plus mr-1.5"></i>Tambah Soal
+                                            </button>
+                                        </div>
+
+                                        <div class="space-y-3">
+                                            ${(activeFolder.questions || []).length === 0 ? `
+                                                <div class="text-center py-8 text-xs text-slate-500">Belum ada soal di folder ini. Klik <strong>Tambah Soal</strong> untuk membuat.</div>
+                                            ` : (activeFolder.questions || []).map((q, idx) => `
+                                                <div class="rounded-xl border border-slate-200 p-4 space-y-2">
+                                                    <div class="flex items-start justify-between gap-3">
+                                                        <div class="text-xs font-extrabold text-slate-900">
+                                                            #${idx + 1} • ${escapeHtml(q.text)}
+                                                        </div>
+                                                        <div class="flex items-center gap-1.5 shrink-0">
+                                                            <button type="button" onclick="openQuestionEditorModal('${escapeHtml(q.id)}')" class="px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-bold text-slate-700">Edit</button>
+                                                            <button type="button" onclick="deleteQuestionFromFolder('${escapeHtml(q.id)}')" class="px-2.5 py-1 rounded-lg bg-rose-50 text-xs font-bold text-rose-600">Hapus</button>
+                                                        </div>
+                                                    </div>
+                                                    <div class="text-[11px] text-slate-500">
+                                                        Tipe: <strong>${q.type.toUpperCase()}</strong> &bull; Bobot: <strong>${q.points} poin</strong>
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                </div>
+                            ` : ''}
+                        ` : activeMenu === 'monitor' ? `
+                            <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                                <div>
+                                    <h2 class="text-base font-extrabold text-slate-900">Live Monitoring Peserta Aktif</h2>
+                                    <p class="text-xs text-slate-500">Pantau peserta yang sedang mengerjakan ujian secara real-time melalui dokumen terpecah <code>cbt_live</code>.</p>
+                                </div>
+                                ${liveSessions.length === 0 ? `
+                                    <div class="text-center py-8 text-xs text-slate-500">Tidak ada peserta yang sedang aktif mengerjakan ujian saat ini.</div>
+                                ` : `
+                                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                        ${liveSessions.map(sess => {
+                                            const shardKey = `${sess.folderId}_${sess.studentId}`;
+                                            return `
+                                                <div class="rounded-2xl border border-slate-200 p-4 space-y-3 bg-slate-50">
+                                                    <div class="flex items-center justify-between">
+                                                        <div class="font-extrabold text-xs text-slate-900">${escapeHtml(sess.studentName)}</div>
+                                                        <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">Sedang Ujian</span>
+                                                    </div>
+                                                    <div class="text-[11px] text-slate-600 space-y-1">
+                                                        <div>Folder: <strong>${escapeHtml(sess.folderTitle)}</strong></div>
+                                                        <div>Progres: <strong>Soal ${(sess.currentIndex || 0) + 1} / ${(sess.questionOrder || []).length}</strong></div>
+                                                        <div>Sisa Waktu: <strong>${formatSeconds(sess.remainingSeconds)}</strong></div>
+                                                        <div>Pelanggaran: <strong class="text-rose-600">${sess.violations || 0}x</strong></div>
+                                                    </div>
+                                                    <button type="button" onclick="forceSubmitStudentSession('${escapeHtml(shardKey)}')"
+                                                        class="w-full py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold">
+                                                        Kunci &amp; Paksa Kumpulkan
+                                                    </button>
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                    </div>
+                                `}
+                            </div>
+                        ` : activeMenu === 'nilai' ? `
+                            <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                                <div class="flex flex-wrap items-center justify-between gap-3">
+                                    <div>
+                                        <h2 class="text-base font-extrabold text-slate-900">Laporan Nilai, Koreksi Uraian &amp; Bukti Pengawasan</h2>
+                                        <p class="text-xs text-slate-500">Disimpan per dokumen unik peserta (<code>cbt_results</code>) anti-tabrakan.</p>
+                                    </div>
+                                    <button type="button" onclick="exportSubmissionsCSV()"
+                                        class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold">
+                                        <i class="fa-solid fa-file-csv mr-1.5"></i>Ekspor CSV
+                                    </button>
+                                </div>
+                                ${submissions.length === 0 ? `
+                                    <div class="text-center py-8 text-xs text-slate-500">Belum ada hasil ujian yang dikumpulkan peserta.</div>
+                                ` : `
+                                    <div class="space-y-4">
+                                        ${submissions.map(sub => {
+                                            const shardKey = `${sub.folderId}_${sub.studentId}`;
+                                            return `
+                                                <div class="rounded-2xl border border-slate-200 p-4 space-y-3">
+                                                    <div class="flex flex-wrap items-center justify-between gap-2">
+                                                        <div>
+                                                            <div class="text-sm font-extrabold text-slate-900">${escapeHtml(sub.studentName)} (${escapeHtml(sub.participantId)})</div>
+                                                            <div class="text-xs text-slate-500">${escapeHtml(sub.folderTitle)} &bull; ${formatDateTimeDisplay(sub.submittedAt)} &bull; ${escapeHtml(sub.submitReason)}</div>
+                                                        </div>
+                                                        <div class="flex items-center gap-3">
+                                                            <span class="px-3 py-1 rounded-xl bg-rose-50 text-rose-700 text-xs font-bold">Pelanggaran: ${sub.violations}x</span>
+                                                            <span class="px-3 py-1 rounded-xl bg-blue-600 text-white text-xs font-extrabold">Total: ${sub.totalScore}</span>
+                                                        </div>
+                                                    </div>
+                                                    ${sub.hasEssay ? `
+                                                        <div class="flex items-center gap-2 bg-slate-50 p-3 rounded-xl">
+                                                            <span class="text-xs font-bold text-slate-700">Input Nilai Uraian:</span>
+                                                            <input type="number" min="0" value="${sub.essayScore || 0}" onchange="gradeEssaySubmission('${escapeHtml(shardKey)}', this.value)"
+                                                                class="w-24 rounded-lg border border-slate-300 px-2.5 py-1 text-xs" />
+                                                        </div>
+                                                    ` : ''}
+                                                    ${Array.isArray(sub.snapshots) && sub.snapshots.length > 0 ? `
+                                                        <div class="space-y-1.5">
+                                                            <div class="text-[11px] font-bold text-slate-600">Galeri Snapshot Kamera Terkompres (${sub.snapshots.length} foto):</div>
+                                                            <div class="flex gap-2 overflow-x-auto pb-1">
+                                                                ${sub.snapshots.map(snap => `
+                                                                    <div class="shrink-0 text-center">
+                                                                        <img src="${snap.image}" alt="Snapshot" class="w-24 h-18 object-cover rounded-lg border border-slate-200" />
+                                                                        <div class="text-[10px] text-slate-500 mt-0.5">${escapeHtml(snap.time)}</div>
+                                                                    </div>
+                                                                `).join('')}
+                                                            </div>
+                                                        </div>
+                                                    ` : ''}
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                    </div>
+                                `}
+                            </div>
+                        ` : `
+                            <!-- Menu Profil, Akun & Konfigurasi Firebase Cloud -->
+                            <div class="space-y-5">
+                                ${renderFirebaseCloudPanel()}
+
+                                <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                                    <form onsubmit="createNewUserAccount(event)" class="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
+                                        <h3 class="text-sm font-extrabold text-slate-900">Tambah Akun Peserta / Administrator Baru</h3>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Peran Akun</label>
+                                            <select id="newUserRole" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs">
+                                                <option value="student">Peserta Ujian (Siswa)</option>
+                                                <option value="admin">Administrator</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Jalur Peserta</label>
+                                            <select id="newUserCategory" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs">
+                                                <option value="instansi">Instansi Sekolah</option>
+                                                <option value="mandiri">Mandiri</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Nama Lengkap</label>
+                                            <input id="newUserName" type="text" required class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">Instansi / Kelas</label>
+                                            <input id="newUserInst" type="text" placeholder="Contoh: SMA Negeri 1" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Username</label>
+                                                <input id="newUserUsername" type="text" required class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">Password</label>
+                                                <input id="newUserPassword" type="text" required class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">PIN Admin (Khusus jika peran Admin)</label>
+                                            <input id="newUserPin" type="text" placeholder="Contoh: 1234" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs" />
+                                        </div>
+                                        <button type="submit" class="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold">
+                                            Simpan Akun Baru
+                                        </button>
+                                    </form>
+
+                                    <div class="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
+                                        <div class="flex flex-wrap items-center justify-between gap-2">
+                                            <h3 class="text-sm font-extrabold text-slate-900">Daftar Pengguna Terdaftar (${filteredUsers.length})</h3>
+                                            <div class="flex items-center gap-2">
+                                                <input type="text" value="${escapeHtml(participantSearchQuery)}" oninput="updateUserSearch(this.value)"
+                                                    placeholder="Cari nama/username..." class="rounded-lg border border-slate-300 px-2.5 py-1 text-xs" />
+                                                <select onchange="updateUserFilter(this.value)" class="rounded-lg border border-slate-300 px-2 py-1 text-xs">
+                                                    <option value="all" ${participantTrackFilter === 'all' ? 'selected' : ''}>Semua</option>
+                                                    <option value="instansi" ${participantTrackFilter === 'instansi' ? 'selected' : ''}>Instansi</option>
+                                                    <option value="mandiri" ${participantTrackFilter === 'mandiri' ? 'selected' : ''}>Mandiri</option>
+                                                    <option value="admin" ${participantTrackFilter === 'admin' ? 'selected' : ''}>Admin</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div class="overflow-x-auto">
+                                            <table class="w-full text-left text-xs">
+                                                <thead class="bg-slate-50 border-b border-slate-200 text-slate-600">
+                                                    <tr>
+                                                        <th class="p-2.5">Nama</th>
+                                                        <th class="p-2.5">Peran / Jalur</th>
+                                                        <th class="p-2.5">Username</th>
+                                                        <th class="p-2.5">Password</th>
+                                                        <th class="p-2.5">Aksi</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody class="divide-y divide-slate-100">
+                                                    ${filteredUsers.map(u => `
+                                                        <tr>
+                                                            <td class="p-2.5 font-bold text-slate-900">${escapeHtml(u.fullName)}</td>
+                                                            <td class="p-2.5">${u.role === 'admin' ? 'Administrator' : ('Siswa (' + escapeHtml(u.category || 'instansi') + ')')}</td>
+                                                            <td class="p-2.5 font-mono">${escapeHtml(u.username)}</td>
+                                                            <td class="p-2.5 font-mono">${escapeHtml(u.password)}</td>
+                                                            <td class="p-2.5">
+                                                                <button type="button" onclick="deleteUserAccount('${escapeHtml(u.id)}')" class="text-rose-600 font-bold hover:underline">Hapus</button>
+                                                            </td>
+                                                        </tr>
+                                                    `).join('')}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `}
+                    </main>
+                </div>
+            `;
+        }
+
+        window.updateUserSearch = function(val) {
+            participantSearchQuery = val;
+            renderApp();
+        };
+
+        window.updateUserFilter = function(val) {
+            participantTrackFilter = val;
+            renderApp();
+        };
+
+        // ==================== 11. RENDER UTAMA & EVENT KEAMANAN ====================
+        function renderApp() {
+            const root = document.getElementById('app');
+            if (!root) return;
+
+            if (!currentUser) {
+                root.innerHTML = renderLoginView();
+                return;
+            }
+
+            if (currentUser.role === 'admin') {
+                root.innerHTML = renderAdminDashboardView();
+                return;
+            }
+
+            if (activeExamSession) {
+                root.innerHTML = renderExamRoomView();
+                return;
+            }
+
+            root.innerHTML = renderStudentDashboardView();
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && activeExamSession && currentUser?.role === 'student') {
+                recordExamViolation('Berpindah tab atau menyembunyikan jendela ujian');
+            } else if (!document.hidden && activeExamSession && currentUser?.role === 'student') {
+                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+                if (!isIOS && !isFullscreenActive()) {
+                    showFullscreenLockOverlay('Anda kembali ke halaman ujian. Ketuk tombol di bawah untuk masuk ke mode layar penuh.');
+                }
+            }
+        });
+
+        function handleFullscreenStateChange() {
+            if (!activeExamSession || currentUser?.role !== 'student') return;
+            if (!isFullscreenActive()) {
+                recordExamViolation('Keluar dari mode layar penuh saat ujian');
+                showFullscreenLockOverlay('Peringatan! Anda keluar dari mode layar penuh. Pelanggaran dicatat dan layar soal dikunci hingga layar penuh aktif kembali.');
+            } else {
+                hideFullscreenLockOverlay();
+            }
+        }
+
+        document.addEventListener('fullscreenchange', handleFullscreenStateChange);
+        document.addEventListener('webkitfullscreenchange', handleFullscreenStateChange);
+        document.addEventListener('mozfullscreenchange', handleFullscreenStateChange);
+        document.addEventListener('MSFullscreenChange', handleFullscreenStateChange);
+
+        window.addEventListener('resize', () => {
+            if (!activeExamSession || currentUser?.role !== 'student') return;
+            const folder = (appState.folders || []).find(f => f.id === activeExamSession.folderId);
+            if (!folder?.security?.detectSplitScreen) return;
+            const currentArea = window.innerWidth * window.innerHeight;
+            if (initialViewportArea > 0 && currentArea < initialViewportArea * 0.68) {
+                recordExamViolation('Terdeteksi mode split-screen atau penyusutan ukuran layar drastis');
+            }
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (!activeExamSession || currentUser?.role !== 'student') return;
+            const folder = (appState.folders || []).find(f => f.id === activeExamSession.folderId);
+            if (!folder?.security?.blockShortcuts) return;
+
+            const isBlocked =
+                e.key === 'F12' ||
+                e.key === 'PrintScreen' ||
+                ((e.ctrlKey || e.metaKey) && ['p', 'P', 's', 'S', 'u', 'U', 'c', 'C', 'v', 'V'].includes(e.key)) ||
+                ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'I', 'j', 'J', 'c', 'C'].includes(e.key));
+
+            if (isBlocked) {
+                e.preventDefault();
+                recordExamViolation('Mencoba menekan tombol pintas terlarang (' + e.key + ')');
+            }
+        });
+
+        function saveSessionBeforeUnload() {
+            if (activeExamSession && currentUser?.role === 'student') {
+                const shardKey = `${activeExamSession.folderId}_${activeExamSession.studentId}`;
+                appState.liveSessionsMap = appState.liveSessionsMap || {};
+                appState.liveSessionsMap[shardKey] = activeExamSession;
+                saveLocalMirror();
+                enqueueSyncTask('live_' + shardKey, { type: 'live', shardKey, data: activeExamSession });
+            }
+        }
+
+        window.addEventListener('pagehide', saveSessionBeforeUnload);
+        window.addEventListener('beforeunload', saveSessionBeforeUnload);
+
+        window.addEventListener('online', () => {
+            updateSyncStatusBadge('Sinyal Kembali — Menyinkronkan ke Cloud...');
+            flushPendingSyncQueue();
+        });
+
+        window.addEventListener('offline', () => {
+            updateSyncStatusBadge('Offline — Jawaban Disimpan Aman di Perangkat');
+        });
+
+        async function initCloudAndApp() {
+            const localData = loadLocalMirror();
+            if (localData) {
+                appState = localData;
+            }
+            renderApp();
+
+            await connectFirebaseRealtime(false);
+
+            try {
+                const savedSessRaw = localStorage.getItem(SESSION_KEY);
+                if (savedSessRaw) {
+                    const parsed = JSON.parse(savedSessRaw);
+                    const foundUser = (appState.users || []).find(u => u.id === parsed.userId);
+                    if (foundUser) {
+                        currentUser = foundUser;
+                        if (foundUser.role === 'student') {
+                            const liveEntries = getAllLiveSessionsList().filter(s => s.studentId === foundUser.id);
+                            if (liveEntries.length > 0) {
+                                await resumeInterruptedExamSession(liveEntries[0]);
+                                return;
+                            }
+                        }
+                    }
+                }
+            } catch (_) {}
+
+            renderApp();
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initCloudAndApp();
+            setInterval(() => {
+                if (hasAnyPendingQueue() && navigator.onLine) {
+                    flushPendingSyncQueue();
+                }
+            }, 5000);
+        });
+    </script>
+</body>
+</html>
